@@ -1,24 +1,26 @@
+# pipelinek-acp — instrucciones del agente
 
-<!-- BACKLOG.MD GUIDELINES START -->
-<!-- backlog.md-instructions-version: 1.55.3 -->
-<CRITICAL_INSTRUCTION>
+Este repositorio es un **producto** del workspace PipelineK. No mantiene backlog propio.
 
-## Backlog.md Workflow
+## Autoridad de seguimiento
 
-This project uses Backlog.md for task and project management.
+La única autoridad para tareas, decisiones y prioridades de este producto es el tablero
+Backlog.md de [`pipelinek-home/`](../pipelinek-home/). Las tareas de este repo llevan la
+etiqueta `repo:pipelinek-acp`; las de contratos del SDK que consume, `repo:pipeline-kotlin`.
 
-**At the beginning of each conversation in this project, run `backlog instructions overview` before answering or taking action. Re-read it only if you have not read it yet in the current conversation.**
+Desde `pipelinek-home/`:
 
-Use the overview to decide whether to search, read, create, or update Backlog tasks.
+```bash
+backlog task list --labels repo:pipelinek-acp          # trabajo de este plugin
+backlog task list --labels batch:2026-11-18            # el intake ACP completo (16 tareas)
+backlog search "ACP" --plain
+```
 
-Before task lifecycle actions, read the matching detailed guide:
-- `backlog instructions task-creation` before creating or splitting tasks
-- `backlog instructions task-execution` before planning, changing status or assignee, adding a plan or implementation notes, or implementing task work
-- `backlog instructions task-finalization` before checking acceptance criteria, writing final summaries, or moving tasks to terminal statuses
+**No ejecutes `backlog init` aquí ni creas un segundo tablero, roadmap o tracker.**
+No edites el tablero del home sin leer antes su `AGENTS.md`.
 
-Use `backlog <command> --help` before running unfamiliar commands. Help shows options, fields, and examples.
+## Al trabajar en este repo
 
-Do not edit Backlog task, draft, document, decision, or milestone markdown files directly. Use the `backlog` CLI so metadata, relationships, and history stay consistent.
-
-</CRITICAL_INSTRUCTION>
-<!-- BACKLOG.MD GUIDELINES END -->
+1. Lee tu tarea en el home por su ID `PKH-…` (busca el marcador `[PKACP-…]` del título).
+2. La CI es PipelineK en local (`pipeline.kts`), no GitHub Actions.
+3. Entrega código, pruebas y documentación específica del producto en este repositorio.
