@@ -73,4 +73,54 @@ object AcpHandshake {
             offered = e.offeredVersion,
             supported = e.supportedVersions,
         )
+
+    /**
+     * The composed session's gate (PKH-135 AC#2/AC#3): the plan's declared needs checked
+     * against the negotiated capabilities, BEFORE any request the agent cannot answer is
+     * sent.
+     *
+     * The session vocabulary negotiates each of these one by one, and they are NOT shaped
+     * alike: `loadSession` is a boolean, the prompt content flags are booleans, MCP
+     * transports are booleans under `mcpCapabilities`, while `sessionCapabilities`
+     * list/resume/delete/close and `auth.logout` are marker OBJECTS whose ABSENCE (null) is
+     * the "not announced" answer. A plan naming an unoffered operation is refused
+     * [AcpRefusal.SessionCapabilityMissing] naming the negotiation that failed — attempting
+     * anyway would trade a diagnosable refusal for an opaque agent-side method-not-found,
+     * and skipping quietly is the silent degradation AC#2 forbids. Multimodal content
+     * blocks ride the same gate as the prompt step's image check, with the prompt's own
+     * vocabulary ([AcpRefusal.MissingCapability]) kept for those.
+     */
+    fun sessionRefusal(agent: AgentInfo, needs: AcpSessionNeeds): AcpRefusal? {
+        if (needs.image && !agent.capabilities.promptCapabilities.image) {
+            return AcpRefusal.MissingCapability("image")
+        }
+        if (needs.audio && !agent.capabilities.promptCapabilities.audio) {
+            return AcpRefusal.MissingCapability("audio")
+        }
+        if (needs.embeddedContext && !agent.capabilities.promptCapabilities.embeddedContext) {
+            return AcpRefusal.MissingCapability("embeddedContext")
+        }
+        if (needs.mcpHttp && !agent.capabilities.mcpCapabilities.http) {
+            return AcpRefusal.SessionCapabilityMissing("mcp http")
+        }
+        if (needs.mcpSse && !agent.capabilities.mcpCapabilities.sse) {
+            return AcpRefusal.SessionCapabilityMissing("mcp sse")
+        }
+        if (needs.load && !agent.capabilities.loadSession) {
+            return AcpRefusal.SessionCapabilityMissing("loadSession")
+        }
+        if (needs.resume && agent.capabilities.sessionCapabilities?.resume == null) {
+            return AcpRefusal.SessionCapabilityMissing("session resume")
+        }
+        if (needs.list && agent.capabilities.sessionCapabilities?.list == null) {
+            return AcpRefusal.SessionCapabilityMissing("session list")
+        }
+        if (needs.delete && agent.capabilities.sessionCapabilities?.delete == null) {
+            return AcpRefusal.SessionCapabilityMissing("session delete")
+        }
+        if (needs.logout && agent.capabilities.auth?.logout == null) {
+            return AcpRefusal.SessionCapabilityMissing("auth logout")
+        }
+        return null
+    }
 }

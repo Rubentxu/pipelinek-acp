@@ -12,6 +12,11 @@
 # No network, no credentials: the agent is the in-repo python fixture over a pipe.
 set -eu
 cd "$(dirname "$0")/.."
+# The host that admits the artifact is the one of the SDK the plugin was compiled
+# against: scripts/host-sdk.sh resolves the pair and puts that host in front of the
+# PATH, so this row and the build stage measure the same executable.
+. scripts/host-sdk.sh
+acp_use_host "$(acp_sdk_version)"
 repo="$(pwd)"
 state="${XDG_STATE_HOME:-$HOME/.local/state}/pipelinek/pipelinek-acp-gate"
 mkdir -p "$state"

@@ -48,9 +48,11 @@ object AcpPluginDeclaration {
     private const val DIGEST_KEY = "pipeline.acp.release.digest"
     private const val MIN_KEY = "pipeline.acp.compatibility.min"
     private const val UNTIL_KEY = "pipeline.acp.compatibility.untilExclusive"
+    private const val SDK_VERSION_KEY = "pipeline.acp.sdk.version"
 
     /** The step families this plugin contributes. The manifest and the contributor read THIS. */
-    val STEPS: List<StepDefinition<*, *>> = listOf(AcpPromptStepDefinition, AcpTaskStepDefinition)
+    val STEPS: List<StepDefinition<*, *>> =
+        listOf(AcpPromptStepDefinition, AcpTaskStepDefinition, AcpSessionStepDefinition)
 
     private val props: Map<String, String> by lazy { releaseProperties(AcpPluginDeclaration::class.java) }
 
@@ -62,6 +64,15 @@ object AcpPluginDeclaration {
 
     /** The version this artifact declares — the value the build stamped into provenance. */
     fun declaredVersion(): String = required(VERSION_KEY)
+
+    /**
+     * The SDK version this artifact was compiled against, as the build stamped it.
+     *
+     * The api range is DERIVED from that version and from the host that will admit the
+     * artifact, so the SDK version is the fact a reader needs to check the range against —
+     * and it is read from the same provenance document, never written by hand.
+     */
+    fun declaredSdkVersion(): String = required(SDK_VERSION_KEY)
 
     /** Compatibility range, DERIVED at build time from the resolved SDK and the measured host. */
     val API_RANGE: PipelineKApiRange by lazy {
@@ -94,7 +105,12 @@ object AcpPluginDeclaration {
             delivery = provider.delivery,
             trust = provider.trust,
             contributions = PluginContributions(
-                steps = STEPS.map {
+                // In the codec's canonical order (by step key): the manifest codec writes the
+                // steps sorted that way and does not reorder them on the way back, so a
+                // declaration in any other order would make the document the build writes
+                // differ from the manifest this plugin declares — and the round trip that
+                // proves the two agree would fail.
+                steps = STEPS.sortedBy { it.contract.key.value }.map {
                     PluginStepContribution(it.contract.key, it.contract.requiredCapabilities)
                 },
                 directives = emptyList(),
