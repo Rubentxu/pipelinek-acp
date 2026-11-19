@@ -85,6 +85,7 @@ fun <B : StepEmitter<B>> StepEmitter<B>.acpTask(
     cwd: String = "",
     budgetSeconds: Long = 300,
     credentialRef: String = "",
+    authority: AcpAuthority? = null,
 ) {
     registryStep(
         stepKey = AcpTaskStepDefinition.KEY,
@@ -96,6 +97,7 @@ fun <B : StepEmitter<B>> StepEmitter<B>.acpTask(
                 cwd = cwd,
                 budgetSeconds = budgetSeconds,
                 credentialRef = credentialRef,
+                authority = authority,
             ),
         ),
     )
@@ -109,7 +111,8 @@ fun StageScope.acpTask(
     cwd: String = "",
     budgetSeconds: Long = 300,
     credentialRef: String = "",
+    authority: AcpAuthority? = null,
 ) {
     val emitter: StepEmitter<StepBodyScope> = this
-    emitter.acpTask(command, prompt, profile, cwd, budgetSeconds, credentialRef)
+    emitter.acpTask(command, prompt, profile, cwd, budgetSeconds, credentialRef, authority)
 }

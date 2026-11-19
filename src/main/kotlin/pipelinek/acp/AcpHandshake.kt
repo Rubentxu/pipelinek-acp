@@ -31,6 +31,26 @@ object AcpHandshake {
         )
 
     /**
+     * The announced identity when the delegation carries a reverse session (PKH-134): the
+     * client advertises `fs` and `terminal` ONLY for the effects its declared authority can
+     * actually grant. A capability the policy would refuse anyway is not advertised — the
+     * advertisement is a promise the intersection has already agreed to keep.
+     */
+    fun clientInfo(pluginVersion: String, reverse: AcpReverseSession): com.agentclientprotocol.client.ClientInfo =
+        com.agentclientprotocol.client.ClientInfo(
+            capabilities = ClientCapabilities(
+                fs = reverse.fsCapabilities(),
+                terminal = reverse.terminalAdvertised(),
+            ),
+            implementation = Implementation(
+                name = "pipelinek-acp",
+                version = pluginVersion,
+                title = "PipelineK ACP client plugin",
+                _meta = null,
+            ),
+        )
+
+    /**
      * The refusal this agent answer deserves, or null when the exchange may proceed.
      *
      * [needsImage] is the step's declared requirement: the ACP vocabulary has no flag for text

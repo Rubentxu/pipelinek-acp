@@ -58,5 +58,16 @@ pipeline {
                 sh("scripts/e2e-acp-task.sh")
             }
         }
+        stage("e2e permission authority") {
+            // PKH-134's row, in scripts/e2e-acp-authority.sh: the authority DECLARED through
+            // the published DSL changes what the real host's delegation answers on the
+            // reverse leg — a granted permission names the optionId the agent offered and
+            // rides out journaled; the same request without the declaration stays denied
+            // (PKH-132's default preserved); and a READONLY profile declaring wider
+            // authority is refused at the seam BEFORE launch. Asserted on operation_journal.
+            timeout(time = 20, unit = "MINUTES") {
+                sh("scripts/e2e-acp-authority.sh")
+            }
+        }
     }
 }

@@ -55,6 +55,12 @@ data class AcpTaskInput(
     val budgetSeconds: Long = 300,
     /** name of a host credential the profile may resolve; never secret material itself. */
     val credentialRef: String = "",
+    /**
+     * The permission authority this delegation declares (PKH-134 AC#1). Null means NO
+     * authority: every reverse request is denied — deny-by-default is preserved as the
+     * absence, never as a value someone can widen by forgetting to set it.
+     */
+    val authority: AcpAuthority? = null,
 )
 
 /**
@@ -77,6 +83,13 @@ data class AcpTaskOutput(
     /** the [AcpRefusal.kindToken] behind [outcome] when ok is false; empty when it is true. */
     val failureKind: String = "",
     val detail: String = "",
+    /**
+     * The bounded typed journal of the reverse leg (PKH-134): what the agent asked the
+     * client for and how the declared authority answered. Durable, capped by
+     * [AcpReverseJournal.MAX_EVENTS] at the source — an agent looping requests cannot
+     * widen the step's output past it.
+     */
+    val reverseEvents: List<String> = emptyList(),
 )
 
 /**
@@ -139,6 +152,7 @@ object AcpTaskOutcome {
                 reply = exchange.reply,
                 stopReason = exchange.stopReason,
                 outcome = if (exchange.stopReason == "CANCELLED") CANCELLED else COMPLETED,
+                reverseEvents = exchange.reverseEvents,
             )
         is AcpExchange.Refused ->
             AcpTaskOutput(

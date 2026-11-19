@@ -71,6 +71,7 @@ class AcpConnection(private val pluginVersion: String) {
                     process = process,
                     scope = scope,
                     cancelOnUnwind = false,
+                    reverse = null,
                 )
             }
         } catch (e: TimeoutCancellationException) {
@@ -98,11 +99,18 @@ class AcpConnection(private val pluginVersion: String) {
      * and when the exchange ends by budget or by the engine's cancellation, [runExchange] has
      * already said session/cancel to the agent while the protocol still lived — the reap that
      * follows here is the tree-wide backstop, so the budget cannot be widened by a deaf agent.
+     *
+     * PKH-134 adds the reverse leg: [reverse] is the declared authority's session machinery —
+     * permissions answered by policy, fs and terminal fenced to [workingDirectory]. Its
+     * terminals die INSIDE this exchange's budget like every other effect the delegation
+     * produced, and its bounded journal rides out in the completed exchange. Null keeps
+     * PKH-132's behaviour verbatim: everything in reverse denied, nothing advertised.
      */
     suspend fun exchangeTask(
         input: AcpTaskInput,
         environment: Map<String, String>,
         workingDirectory: Path,
+        reverse: AcpReverseSession? = null,
     ): AcpExchange {
         val process = AcpAgentProcess.launch(input.command, environment, workingDirectory)
             .getOrElse { e -> return AcpExchange.Refused(AcpRefusal.AgentUnreachable(e.message ?: e.toString())) }
@@ -116,6 +124,7 @@ class AcpConnection(private val pluginVersion: String) {
                     process = process,
                     scope = scope,
                     cancelOnUnwind = true,
+                    reverse = reverse,
                 )
             }
         } catch (e: TimeoutCancellationException) {
@@ -134,6 +143,10 @@ class AcpConnection(private val pluginVersion: String) {
             // AC#2: the TREE dies inside the budget. The agent's own children are the
             // delegation's effects; leaving them alive would widen the run past its deadline.
             process.destroyTree()
+            // The plugin's OWN terminals (the terminal/* reverse leg, AC#3) are effects the
+            // client created, so the client kills them too — inside the same budget, bounded,
+            // never left for a later exchange to find.
+            reverse?.reapTerminals()
         }
     }
 
@@ -191,6 +204,13 @@ class AcpConnection(private val pluginVersion: String) {
      * ends by cancellation of OUR coroutine — the budget firing or the engine withdrawing the
      * run — the agent is told session/cancel in ACP words before the stack unwinds out, so
      * its pending work resolves in the protocol rather than only in a kill.
+     *
+     * [reverse] is the PKH-134 session machinery: when present, the client answers
+     * agent-initiated requests by the declared authority instead of [DenyingOperations],
+     * announces the capability intersection it can actually keep, and its pending permission
+     * requests are resolved to Cancelled BEFORE session/cancel is said — the agent resolves
+     * its own open request instead of hanging until the reap. The prompt path passes null
+     * and keeps PKH-132's deny-everything behaviour verbatim.
      */
     private suspend fun runExchange(
         prompt: String,
@@ -198,6 +218,7 @@ class AcpConnection(private val pluginVersion: String) {
         process: AcpAgentProcess,
         scope: CoroutineScope,
         cancelOnUnwind: Boolean,
+        reverse: AcpReverseSession?,
     ): AcpExchange {
         val transport = StdioTransport(
             parentScope = scope,
@@ -210,7 +231,10 @@ class AcpConnection(private val pluginVersion: String) {
         protocol.start()
         val client = Client(protocol)
         try {
-            val agentInfo = client.initialize(AcpHandshake.clientInfo(pluginVersion))
+            val agentInfo = client.initialize(
+                if (reverse != null) AcpHandshake.clientInfo(pluginVersion, reverse)
+                else AcpHandshake.clientInfo(pluginVersion),
+            )
             AcpHandshake.refusal(agentInfo, needsImage = false)?.let {
                 return AcpExchange.Refused(it)
             }
@@ -219,14 +243,20 @@ class AcpConnection(private val pluginVersion: String) {
                     cwd = cwd.ifEmpty { System.getProperty("user.dir") },
                     mcpServers = emptyList(),
                 ),
-                operationsFactory = ClientOperationsFactory { _, _ -> DenyingOperations },
+                operationsFactory = reverse?.factory()
+                    ?: ClientOperationsFactory { _, _ -> DenyingOperations },
             )
             val reply = StringBuilder()
             var stopReason = ""
             try {
                 promptInto(session, prompt, reply) { stopReason = it }
             } catch (e: CancellationException) {
-                if (cancelOnUnwind) sendCancelUnderNonCancellable(session)
+                if (cancelOnUnwind) {
+                    // AC#1's last clause: the open permission requests get their Cancelled
+                    // answer over the wire first; session/cancel is said only after.
+                    reverse?.cancelOutstandingPermissions()
+                    sendCancelUnderNonCancellable(session)
+                }
                 throw e
             }
             if (stopReason.isEmpty()) {
@@ -238,7 +268,11 @@ class AcpConnection(private val pluginVersion: String) {
             // it answered with is recorded. The stop reason travels in the output and the
             // pipeline branches on it; discarding a MAX_TOKENS reply here would be the plugin
             // deciding the answer was not worth delivering.
-            return AcpExchange.Completed(reply.toString(), stopReason)
+            return AcpExchange.Completed(
+                reply.toString(),
+                stopReason,
+                reverse?.journal?.snapshot() ?: emptyList(),
+            )
         } finally {
             protocol.close()
         }
