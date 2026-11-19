@@ -124,6 +124,15 @@ object AcpTaskOutcome {
         is AcpRefusal.VersionMismatch -> HANDSHAKE_REFUSED
         is AcpRefusal.MissingCapability -> HANDSHAKE_REFUSED
         is AcpRefusal.AgentRefusedRequest -> HANDSHAKE_REFUSED
+        // PKH-135's session-shaped refusals: the task step's profile gate and the composed
+        // session's capability gates both answer "the target cannot honour what was declared",
+        // which is the task step's refusal-before-launch class. They cannot arrive from the
+        // task path today — the mapping is total so that remains a fact, not an accident.
+        is AcpRefusal.SessionCapabilityMissing -> HANDSHAKE_REFUSED
+        is AcpRefusal.ConfigInvalid -> PROFILE_REFUSED
+        is AcpRefusal.ActivePromptInProgress -> PROFILE_REFUSED
+        is AcpRefusal.ForeignSessionRef -> PROFILE_REFUSED
+        is AcpRefusal.SessionOperationFailed -> HANDSHAKE_REFUSED
         is AcpRefusal.TransportClosed -> TRANSPORT_FAILURE
         is AcpRefusal.TransportFailure -> TRANSPORT_FAILURE
         is AcpRefusal.AgentExited -> TRANSPORT_FAILURE

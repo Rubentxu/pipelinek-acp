@@ -55,7 +55,10 @@ class AcpProvenanceTest {
         val provided = AcpContributor().registrations().map { it.stepKey.value }.sorted()
         // This equality IS the cross-check admission performs; drifting here is a runtime refusal.
         assertEquals(declared, provided)
-        assertEquals(listOf("pipelinek.acp.prompt", "pipelinek.acp.task"), declared)
+        assertEquals(
+            listOf("pipelinek.acp.prompt", "pipelinek.acp.session", "pipelinek.acp.task"),
+            declared,
+        )
     }
 
     @Test

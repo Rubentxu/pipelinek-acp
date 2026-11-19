@@ -58,6 +58,17 @@ pipeline {
                 sh("scripts/e2e-acp-task.sh")
             }
         }
+        stage("e2e composed session") {
+            // PKH-135's row, in scripts/e2e-acp-session.sh: the installed host lowers
+            // `acpSession` with TWO sequential turns whose second reply must echo BOTH
+            // questions (the agent-side context survives the host's run, AC#1), the close/
+            // delete witness proves the normal exit says close and never deletes (AC#3), and
+            // a minimal-caps plan declaring list+logout answers ACP_SESSION_CAPABILITY_MISSING
+            // before the session is even asked (AC#2/AC#4). Asserted on operation_journal.
+            timeout(time = 20, unit = "MINUTES") {
+                sh("scripts/e2e-acp-session.sh")
+            }
+        }
         stage("e2e permission authority") {
             // PKH-134's row, in scripts/e2e-acp-authority.sh: the authority DECLARED through
             // the published DSL changes what the real host's delegation answers on the

@@ -116,3 +116,144 @@ fun StageScope.acpTask(
     val emitter: StepEmitter<StepBodyScope> = this
     emitter.acpTask(command, prompt, profile, cwd, budgetSeconds, credentialRef, authority)
 }
+
+/**
+ * Declare one prompt turn of a composed session (PKH-135) — [text] plus any multimodal
+ * [content] blocks that ride with it. A plain data construction; the capability gate runs
+ * at the connection, not here.
+ */
+fun acpTurn(text: String, content: List<AcpContentInput> = emptyList()): AcpTurnInput =
+    AcpTurnInput(text = text, content = content)
+
+/** Declare an image block (base64 in [data]) gated by the negotiated `image` capability. */
+fun acpImage(data: String, mimeType: String): AcpContentInput = AcpContentInput.Image(data, mimeType)
+
+/** Declare an audio block (base64 in [data]) gated by the negotiated `audio` capability. */
+fun acpAudio(data: String, mimeType: String): AcpContentInput = AcpContentInput.Audio(data, mimeType)
+
+/** Declare an embedded text resource gated by the negotiated `embeddedContext` capability. */
+fun acpResource(uri: String, text: String, mimeType: String = "text/plain"): AcpContentInput =
+    AcpContentInput.Resource(uri, text, mimeType)
+
+/** Declare a resource LINK: no bytes embedded, so no multimodal capability gates it. */
+fun acpResourceLink(uri: String, name: String, mimeType: String = ""): AcpContentInput =
+    AcpContentInput.ResourceLink(uri, name, mimeType)
+
+/** Declare an MCP descriptor over stdio for the session's tool servers. */
+fun acpMcpStdio(name: String, command: List<String>): AcpMcpInput =
+    AcpMcpInput(name = name, transport = "stdio", command = command)
+
+/** Declare an MCP descriptor over HTTP; gated by the negotiated mcp `http` capability. */
+fun acpMcpHttp(
+    name: String,
+    url: String,
+    headers: List<AcpMcpHeader> = emptyList(),
+): AcpMcpInput = AcpMcpInput(name = name, transport = "http", url = url, headers = headers)
+
+/** Declare an MCP descriptor over SSE; gated by the negotiated mcp `sse` capability. */
+fun acpMcpSse(
+    name: String,
+    url: String,
+    headers: List<AcpMcpHeader> = emptyList(),
+): AcpMcpInput = AcpMcpInput(name = name, transport = "sse", url = url, headers = headers)
+
+/** One http/sse MCP header as the DSL declares it. */
+fun acpMcpHeader(name: String, value: String): AcpMcpHeader = AcpMcpHeader(name, value)
+
+/**
+ * A composed ACP session: one connection, [turns] prompt turns run IN ORDER against the
+ * same session, plus the session operations the negotiated schema offers (PKH-135).
+ *
+ * ```kotlin
+ * import pipelinek.acp.acpSession
+ * import pipelinek.acp.acpTurn
+ * pipeline {
+ *     stages {
+ *         stage("Agent") {
+ *             acpSession(
+ *                 command = listOf("my-agent", "--acp"),
+ *                 turns = listOf(
+ *                     acpTurn("read file X and list its exports"),
+ *                     acpTurn("now write a test for the second export"),
+ *                 ),
+ *             )
+ *         }
+ *     }
+ * }
+ * ```
+ *
+ * The scope is LEXICAL, not a daemon: the session lives exactly as long as the step, and
+ * the ids it mints come back only as opaque refs. What the DSL deliberately cannot say: a
+ * second concurrent prompt on this session (v1 answers that with
+ * `ACP_ACTIVE_PROMPT_IN_PROGRESS`), a raw wire session id (load/resume name the AGENT's id;
+ * ownership is checked at the connection), or a delete implied by closing — [deleteOnExit]
+ * is the only thing that erases history, and the default is false (AC#3). Lowering is the
+ * same single `registryStep` primitive as [acpPrompt] — one lowering, never two.
+ */
+fun <B : StepEmitter<B>> StepEmitter<B>.acpSession(
+    command: List<String>,
+    turns: List<AcpTurnInput>,
+    cwd: String = "",
+    timeoutSeconds: Long = 300,
+    mcpServers: List<AcpMcpInput> = emptyList(),
+    modeId: String = "",
+    configOptions: List<AcpConfigInput> = emptyList(),
+    loadSessionId: String = "",
+    resumeSessionId: String = "",
+    listSessions: Boolean = false,
+    logout: Boolean = false,
+    deleteOnExit: Boolean = false,
+) {
+    registryStep(
+        stepKey = AcpSessionStepDefinition.KEY,
+        encodedInput = AcpSessionStepDefinition.InputCodec.encode(
+            AcpSessionInput(
+                command = command,
+                turns = turns,
+                cwd = cwd,
+                timeoutSeconds = timeoutSeconds,
+                mcpServers = mcpServers,
+                modeId = modeId,
+                configOptions = configOptions,
+                loadSessionId = loadSessionId,
+                resumeSessionId = resumeSessionId,
+                listSessions = listSessions,
+                logout = logout,
+                deleteOnExit = deleteOnExit,
+            ),
+        ),
+    )
+}
+
+/** The historic `StageScope` route; see the contract route for why both exist and are one. */
+@Suppress("LongParameterList")
+fun StageScope.acpSession(
+    command: List<String>,
+    turns: List<AcpTurnInput>,
+    cwd: String = "",
+    timeoutSeconds: Long = 300,
+    mcpServers: List<AcpMcpInput> = emptyList(),
+    modeId: String = "",
+    configOptions: List<AcpConfigInput> = emptyList(),
+    loadSessionId: String = "",
+    resumeSessionId: String = "",
+    listSessions: Boolean = false,
+    logout: Boolean = false,
+    deleteOnExit: Boolean = false,
+) {
+    val emitter: StepEmitter<StepBodyScope> = this
+    emitter.acpSession(
+        command = command,
+        turns = turns,
+        cwd = cwd,
+        timeoutSeconds = timeoutSeconds,
+        mcpServers = mcpServers,
+        modeId = modeId,
+        configOptions = configOptions,
+        loadSessionId = loadSessionId,
+        resumeSessionId = resumeSessionId,
+        listSessions = listSessions,
+        logout = logout,
+        deleteOnExit = deleteOnExit,
+    )
+}

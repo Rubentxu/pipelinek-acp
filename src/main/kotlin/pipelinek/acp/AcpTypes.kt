@@ -114,6 +114,70 @@ sealed class AcpRefusal {
         override val detail: String = "the agent refused '$method': $reason"
     }
 
+    /**
+     * The session plan declared an operation the connection does not offer (PKH-135 AC#2/AC#3).
+     *
+     * The ACP vocabulary negotiates these one by one — `loadSession`, `sessionCapabilities
+     * .list/resume/delete/close`, `auth.logout`, `mcpCapabilities.http/sse`, the session's own
+     * modes and config options — and a plan naming an unoffered one is refused rather than
+     * attempted: an attempt into a capability gap comes back as an opaque agent-side error,
+     * and silently skipping the operation would be the degradation AC#2 forbids. [capability]
+     * is the negotiated name that was missing, so the refusal says what to negotiate, not what
+     * the agent did.
+     */
+    data class SessionCapabilityMissing(val capability: String) : AcpRefusal() {
+        override val kindToken: String = "ACP_SESSION_CAPABILITY_MISSING"
+        override val detail: String =
+            "the agent negotiated the session without the '$capability' capability this step requires"
+    }
+
+    /**
+     * A session reference handed to the scope was not minted by this connection (PKH-135 AC#4).
+     *
+     * [SessionRef] binds the agent's id to the owner epoch and nonce of the connection that
+     * created it. Joining a session another connection owns would be a second, unaccounted
+     * holder of the same agent-side state — the v1 rule is one active prompt per session, so
+     * the honest answer to a foreign ref is a refusal, never a takeover.
+     */
+    data class ForeignSessionRef(val ref: String) : AcpRefusal() {
+        override val kindToken: String = "ACP_FOREIGN_SESSION_REF"
+        override val detail: String =
+            "session ref '$ref' was not minted by this connection; its owner epoch does not match"
+    }
+
+    /**
+     * The declared configuration (a mode or a config option/value) does not fit what the
+     * negotiated session offers (PKH-135 AC#4).
+     *
+     * Modes and options are advertised per session; a value outside the offered set, an
+     * option that was never advertised, or a boolean given a non-boolean is refused before
+     * the wire says anything, so the branch names the configuration problem and not the
+     * agent's error code.
+     */
+    data class ConfigInvalid(val reason: String) : AcpRefusal() {
+        override val kindToken: String = "ACP_CONFIG_INVALID"
+        override val detail: String = "the declared session configuration is not valid here: $reason"
+    }
+
+    /**
+     * A prompt was asked for while another one on the same session scope is still active
+     * (PKH-135 AC#4). v1 guarantees exactly one active prompt per session; independent
+     * sessions parallelize, one scope does not multiplex.
+     */
+    data class ActivePromptInProgress(val reason: String) : AcpRefusal() {
+        override val kindToken: String = "ACP_ACTIVE_PROMPT_IN_PROGRESS"
+        override val detail: String = "the session already has a prompt active: $reason"
+    }
+
+    /**
+     * A negotiated session operation (load/resume/list/close/delete/logout) failed on the
+     * wire for a reason the plan cannot honour (PKH-135 AC#3).
+     */
+    data class SessionOperationFailed(val operation: String, val reason: String) : AcpRefusal() {
+        override val kindToken: String = "ACP_SESSION_OPERATION_FAILED"
+        override val detail: String = "session operation '$operation' failed: $reason"
+    }
+
     /** An error the SDK surfaced from the transport, not classifiable as any of the above. */
     data class TransportFailure(val reason: String) : AcpRefusal() {
         override val kindToken: String = "ACP_TRANSPORT_FAILURE"
