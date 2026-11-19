@@ -109,6 +109,44 @@ class AcpTaskIsolationTest {
     }
 
     @Test
+    fun `an authority wider than the profile ceiling is refused at the seam before launch`() {
+        // PKH-134 AC#1: declaring mutate/execute authority under the READONLY ceiling is a
+        // contradiction the seam names BEFORE launch — the same promise rule as the profile.
+        val refusal = AcpTaskIsolation.validate(
+            AcpTaskInput(
+                command = listOf("python3", "-I", "agent.py"),
+                prompt = "p",
+                profile = AcpTaskProfile.READONLY,
+                authority = AcpAuthority(listOf(AcpToolEffect.READ, AcpToolEffect.MUTATE)),
+            ),
+            leaseRoot = root,
+        )
+        assertNotNull(refusal)
+        assertEquals("ACP_PROFILE_REFUSED", refusal!!.kindToken)
+        assertTrue("authority" in refusal.detail.lowercase(), refusal.detail)
+        // A READ-only authority under READONLY is the honest declaration: it validates.
+        assertEquals(
+            null,
+            AcpTaskIsolation.validate(
+                AcpTaskInput(
+                    command = listOf("python3", "-I", "agent.py"),
+                    prompt = "p",
+                    authority = AcpAuthority(listOf(AcpToolEffect.READ)),
+                ),
+                leaseRoot = root,
+            ),
+        )
+        // And no authority at all stays exactly PKH-132's default: valid, everything denied.
+        assertEquals(
+            null,
+            AcpTaskIsolation.validate(
+                AcpTaskInput(command = listOf("python3", "-I", "agent.py"), prompt = "p"),
+                leaseRoot = root,
+            ),
+        )
+    }
+
+    @Test
     fun `an argv that routes through a shell is refused before anything launches`() {
         for (argv in listOf(
             listOf("sh", "-c", "rm -rf /"),

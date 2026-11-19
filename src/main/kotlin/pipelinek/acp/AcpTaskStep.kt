@@ -107,10 +107,14 @@ object AcpTaskStepDefinition : StepDefinition<AcpTaskInput, AcpTaskOutput> {
         }
 
         val effectiveCwd = if (input.cwd.isBlank()) workspaceRoot else workspaceRoot.resolve(input.cwd).normalize()
+        // PKH-134: the reverse leg is fenced to the same lease root the cwd is resolved
+        // against, and gated by the declared authority (null authority = deny-by-default).
+        val reverse = AcpReverseSession(effectiveCwd, input.profile, input.authority)
         val exchange = AcpConnection(AcpPluginDeclaration.declaredVersion()).exchangeTask(
             input = input,
             environment = AcpTaskIsolation.childEnvironment(credential),
             workingDirectory = effectiveCwd,
+            reverse = reverse,
         )
         AcpTaskOutcome.toOutput(exchange)
     }

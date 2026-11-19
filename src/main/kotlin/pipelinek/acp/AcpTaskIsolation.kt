@@ -38,8 +38,9 @@ object AcpTaskIsolation {
     val CREDENTIAL_PASSWORD_VAR: String = "PIPELINEK_ACP_CREDENTIAL_PASSWORD"
 
     /** Names that reinterpret argv themselves — handing a delegation to one is AC#1's "argv
-     * without shell" broken at the door. */
-    private val SHELL_EXECUTABLES: Set<String> = setOf(
+     * without shell" broken at the door. Public because the terminal reverse leg (PKH-134
+     * AC#3) refuses the same names for agent-requested commands: one list, one policy. */
+    val SHELL_NAMES: Set<String> = setOf(
         "sh", "bash", "zsh", "dash", "ksh", "fish", "cmd", "cmd.exe", "powershell", "pwsh",
     )
 
@@ -61,11 +62,21 @@ object AcpTaskIsolation {
                     "outside the host's policy",
             )
         }
+        // PKH-134 AC#1: an authority wider than the profile's ceiling is a contradiction the
+        // seam names BEFORE launch (the ACP_PROFILE_REFUSED precedent) — not a grant silently
+        // narrowed at decision time, because a script that declared mutate-under-readonly
+        // deserves to hear its own declaration was refused, not to watch it vanish.
+        if (input.authority != null && AcpPermissionPolicy.ceilingViolation(input.profile, input.authority)) {
+            return AcpRefusal.ProfileRefusal(
+                "the declared authority grants effects the ${input.profile} profile cannot " +
+                    "host; a READONLY delegation declares at most READ effects",
+            )
+        }
         if (input.command.isEmpty()) {
             return AcpRefusal.ProfileRefusal("the agent argv is empty; there is nothing to launch")
         }
         val executable = Paths.get(input.command.first()).fileName?.toString()?.lowercase() ?: ""
-        if (executable in SHELL_EXECUTABLES) {
+        if (executable in SHELL_NAMES) {
             return AcpRefusal.ProfileRefusal(
                 "argv[0] is the shell '$executable'; a shell reinterprets the delegated argv " +
                     "and opens an injection seam the profile never asked to widen",

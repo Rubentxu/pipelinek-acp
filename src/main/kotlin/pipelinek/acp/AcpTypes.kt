@@ -166,8 +166,19 @@ sealed class AcpRefusal {
     }
 }
 
-/** An exchange either completed with a reply, or it is refused with a typed reason. */
+/**
+ * An exchange either completed with a reply, or it is refused with a typed reason.
+ *
+ * [reverseEvents] is the bounded typed journal of the reverse leg (PKH-134): what the
+ * agent asked the client to do and how the declared authority answered. It is empty for
+ * the PKH-132 prompt path, which advertises and runs nothing in reverse.
+ */
 sealed class AcpExchange {
-    data class Completed(val reply: String, val stopReason: String) : AcpExchange()
+    data class Completed(
+        val reply: String,
+        val stopReason: String,
+        val reverseEvents: List<String> = emptyList(),
+    ) : AcpExchange()
+
     data class Refused(val refusal: AcpRefusal) : AcpExchange()
 }
