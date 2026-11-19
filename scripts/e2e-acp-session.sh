@@ -14,10 +14,12 @@
 # No network, no credentials: the agent is the in-repo python fixture over a pipe.
 set -eu
 cd "$(dirname "$0")/.."
+# The host that admits the artifact is the one of the SDK the plugin was compiled
+# against: scripts/host-sdk.sh resolves the pair and puts that host in front of the
+# PATH, so this row and the build stage measure the same executable.
+. scripts/host-sdk.sh
+acp_select_host "$(acp_sdk_version)" > /dev/null
 repo="$(pwd)"
-# The host that admits the jar must be the one the provenance range derives from: 0.98.0,
-# the SDK the plugin compiled against (the StepEmitter.registryStep seam landed there).
-export ASDF_PIPELINEK_VERSION=0.98.0
 state="${XDG_STATE_HOME:-$HOME/.local/state}/pipelinek/pipelinek-acp-gate"
 mkdir -p "$state"
 rm -f "$state/run-session.sqlite" "$state/run-session.sqlite-wal" "$state/run-session.sqlite-shm"

@@ -23,6 +23,12 @@
 // /tmp/pksdk); the host version the provenance range is derived from is measured from the
 // installed `pipelinek` itself, never hardcoded here — a number written in this file would be
 // a second answer, and a stale one.
+//
+// The host is the one of the SDK the plugin compiles against: the plugin declares an api
+// range whose floor is the newer of the two and whose ceiling is the next minor of the SDK,
+// and that range is empty unless both halves sit in the same minor. scripts/host-sdk.sh
+// resolves the pair — the bundle names the SDK, the installed host of that version runs the
+// e2e rows — so every row below measures the same executable.
 
 pipeline {
     stages {
