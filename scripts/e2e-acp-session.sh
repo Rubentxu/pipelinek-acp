@@ -15,10 +15,9 @@
 set -eu
 cd "$(dirname "$0")/.."
 repo="$(pwd)"
-# The host that admits the jar is the one the provenance range derives from: the version
-# `pipelinek version` measures (the lock's 0.97.0). The derived ceiling is the SDK's next
-# minor and admission requires runtime < untilExclusive, so pinning a newer host here would
-# refuse this very jar — the same default every other e2e row pays with.
+# The host that admits the jar must be the one the provenance range derives from: 0.98.0,
+# the SDK the plugin compiled against (the StepEmitter.registryStep seam landed there).
+export ASDF_PIPELINEK_VERSION=0.98.0
 state="${XDG_STATE_HOME:-$HOME/.local/state}/pipelinek/pipelinek-acp-gate"
 mkdir -p "$state"
 rm -f "$state/run-session.sqlite" "$state/run-session.sqlite-wal" "$state/run-session.sqlite-shm"

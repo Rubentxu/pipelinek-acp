@@ -40,13 +40,16 @@ CAPS = {
 
 MODES = [{"id": "default", "name": "Default"}, {"id": "plan", "name": "Plan"}]
 CURRENT_MODE = "default"
+# The library's SessionConfigSelectOptionsSerializer reads `options` as a JSON ARRAY
+# directly (flat is the array form; the grouped form carries an item with a "group"
+# key) — an envelope object here fails decoding of the whole session/new result.
 CONFIG_OPTIONS = [{
     "id": "verbosity",
     "name": "Verbosity",
     "type": "select",
     "currentValue": "low",
-    "options": {"type": "flat", "options": [
-        {"value": "low", "name": "Low"}, {"value": "high", "name": "High"}]},
+    "options": [
+        {"value": "low", "name": "Low"}, {"value": "high", "name": "High"}],
 }]
 
 

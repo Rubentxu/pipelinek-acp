@@ -172,7 +172,6 @@ data class AcpSessionOutput(
  */
 object AcpSessionOutcome {
     const val COMPLETED = "COMPLETED"
-    const val TURN_CANCELLED = "TURN_CANCELLED"
     const val CAPABILITY_MISSING = "CAPABILITY_MISSING"
     const val SESSION_REFUSED = "SESSION_REFUSED"
     const val TRANSPORT_FAILURE = "TRANSPORT_FAILURE"
@@ -180,7 +179,7 @@ object AcpSessionOutcome {
     const val UNKNOWN = "UNKNOWN"
 
     val VOCABULARY: Set<String> = setOf(
-        COMPLETED, TURN_CANCELLED, CAPABILITY_MISSING, SESSION_REFUSED,
+        COMPLETED, CAPABILITY_MISSING, SESSION_REFUSED,
         TRANSPORT_FAILURE, BUDGET_EXCEEDED, UNKNOWN,
     )
 
@@ -202,8 +201,9 @@ object AcpSessionOutcome {
     }
 
     /**
-     * The exchange-shaped answer mapped into output. A turn that ENDED with CANCELLED keeps
-     * ok = true: the reply is real durable content and the stop reason says what it is worth.
+     * The exchange-shaped answer mapped into output. A completed scope is COMPLETED whatever
+     * its turns' stop reasons were: a reply that ENDED with CANCELLED is still real durable
+     * content, and its stop reason rides in the turn output the pipeline branches on.
      */
     fun toOutput(
         refusal: AcpRefusal?,

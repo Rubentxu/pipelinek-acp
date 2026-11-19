@@ -72,7 +72,7 @@ class AcpSessionCodecTest {
         assertEquals(output, codec.decode(codec.encode(output)))
         assertEquals(
             setOf(
-                "COMPLETED", "TURN_CANCELLED", "CAPABILITY_MISSING", "SESSION_REFUSED",
+                "COMPLETED", "CAPABILITY_MISSING", "SESSION_REFUSED",
                 "TRANSPORT_FAILURE", "BUDGET_EXCEEDED", "UNKNOWN",
             ),
             AcpSessionOutcome.VOCABULARY,

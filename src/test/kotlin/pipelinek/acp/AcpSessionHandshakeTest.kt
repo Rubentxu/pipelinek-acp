@@ -103,7 +103,7 @@ class AcpSessionHandshakeTest {
     }
 
     @Test
-    fun `text-only prompts need no gate: every agent speaks text`() {
+    fun `text-only prompts need no gate — every agent speaks text`() {
         assertNull(AcpHandshake.sessionRefusal(agent(minimalCaps), AcpSessionNeeds()))
     }
 }

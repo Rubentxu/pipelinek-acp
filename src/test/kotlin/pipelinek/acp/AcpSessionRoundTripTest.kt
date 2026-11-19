@@ -320,4 +320,40 @@ class AcpSessionRoundTripTest {
         assertEquals("ACP_CONFIG_INVALID", out.failureKind)
         assertNull(out.sessionRef.ifEmpty { null })
     }
+
+    @Test
+    fun `a session ref another connection minted is refused before any launch`() {
+        // AC#4's foreign-ref gate: the token comes from a different owner nonce, so joining
+        // the session it names would hand a persisting agent a second, unaccounted holder of
+        // one session's state. The answer is typed, names the ref, and opens nothing.
+        val foreignToken = SessionRef.mint("some-other-connection", "session-1").value
+        val out = AcpSessionConnection("0.0.0-test").run(
+            input(
+                fixture("full"), turns = listOf(acpTurn("must not run")),
+                copy = { it.copy(loadSessionId = foreignToken) },
+            ),
+        )
+        assertFalse(out.ok)
+        assertEquals("ACP_FOREIGN_SESSION_REF", out.failureKind)
+        assertEquals("SESSION_REFUSED", out.outcome)
+        assertNull(out.sessionRef.ifEmpty { null }, "a gated plan launches no session")
+    }
+
+    @Test
+    fun `a ref token this connection minted resolves to the agent id it carries`() {
+        // The owner path of the same gate: the token is the durable answer a previous turn of
+        // THIS connection handed out; resolving it must put the plain agent id on the wire
+        // (the fixture records load under that id) — proof the resolution happened, not just
+        // that nothing refused.
+        val connection = AcpSessionConnection("0.0.0-test")
+        val token = SessionRef.mint(connection.connectionNonce, "agent-resumed-1").value
+        val out = connection.run(
+            input(
+                fixture("full"), turns = listOf(acpTurn("after token load")),
+                copy = { it.copy(loadSessionId = token) },
+            ),
+        )
+        assertTrue(out.ok, "own token must load, got ${out.failureKind}: ${out.detail}")
+        assertEquals("turn1|seen:after token load|kinds:text", out.turns.single().reply)
+    }
 }

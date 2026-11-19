@@ -54,8 +54,10 @@ class AcpAgentProcess internal constructor(
      * Kills the process AND every descendant it started, then waits up to [graceMillis] for
      * the tree to be gone. PKH-133 AC#2: a budget or a cancellation that reaps only the agent
      * leaves its children holding pipes, files and network — the tree is the unit of cleanup.
-     * A descendant that ignores SIGTERM is SIGKILLed after the grace window; cleanup is
-     * bounded, never hopeful. Returns the number of descendants killed.
+     * Anything that ignores SIGTERM — the agent itself included — is SIGKILLed after the
+     * grace window; cleanup is bounded, never hopeful. A parent that outlived the window
+     * would keep its stdout pipe open, and with it the reader coroutine: the release promise
+     * fails silently and the IO thread leaks with it. Returns the number of descendants killed.
      */
     fun destroyTree(graceMillis: Long = 2_000): Int {
         val descendants = process.descendants().filter { it.isAlive }.toList()
@@ -63,11 +65,12 @@ class AcpAgentProcess internal constructor(
         descendants.forEach { it.destroy() }
         val deadline = System.nanoTime() + graceMillis * 1_000_000
         var remaining = descendants.filter { it.isAlive }
-        while (remaining.isNotEmpty() && System.nanoTime() < deadline) {
+        while ((remaining.isNotEmpty() || process.isAlive) && System.nanoTime() < deadline) {
             Thread.sleep(10)
             remaining = descendants.filter { it.isAlive }
         }
         remaining.forEach { it.destroyForcibly() }
+        if (process.isAlive) process.destroyForcibly()
         return descendants.size
     }
 

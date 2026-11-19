@@ -47,8 +47,11 @@ import kotlinx.coroutines.withTimeoutOrNull
  * capability, because another run cannot tell where the session lives. The ref binds the
  * agent's id to THIS connection's epoch — a per-JVM monotonic serial plus a per-connection
  * nonce — so a ref produced by one connection is provably foreign to another even after the
- * process that minted it is gone. The wire vocabulary (SessionId) never leaves the
- * connection boundary; the ref is a plain opaque string the durable output can carry.
+ * process that minted it is gone. The ref is a plain opaque string the durable output can
+ * carry; its security property is the nonce comparison [exchange] enforces, NOT the base64
+ * wrapping (an eavesdropper can decode the token — decoding still buys nothing outside the
+ * connection that minted it, and a stolen token replayed here answers
+ * [AcpRefusal.ForeignSessionRef] before a process launches).
  */
 class SessionRef private constructor(
     /** the opaque token safe to put in step output. */
@@ -85,9 +88,42 @@ class SessionRef private constructor(
         fun ownedBy(ref: SessionRef, connectionNonce: String): Boolean =
             ref.ownerNonce == connectionNonce
 
+        /**
+         * Resolve a declared load/resume id against the connection carrying [connectionNonce]
+         * (PKH-135 AC#4). The plan may name a session three ways, and each has an answer:
+         * a plain agent id is external knowledge and rides the wire unchanged; a token THIS
+         * connection minted resolves to the agent id it carries; a token another connection
+         * minted is [SessionIdResolution.Foreign] — never sent, refused before launch.
+         */
+        fun resolve(raw: String, connectionNonce: String): SessionIdResolution {
+            val ref = parse(raw) ?: return SessionIdResolution.Accepted(wireId = raw, declared = raw)
+            return if (ownedBy(ref, connectionNonce)) {
+                SessionIdResolution.Accepted(wireId = ref.agentSessionId, declared = raw)
+            } else {
+                SessionIdResolution.Foreign(declared = raw)
+            }
+        }
+
         private fun encode(s: String): String =
             Base64.getUrlEncoder().withoutPadding().encodeToString(s.toByteArray(Charsets.UTF_8))
     }
+}
+
+/** The decision of resolving one declared session id against the asking connection (AC#4). */
+sealed class SessionIdResolution {
+    /** the id exactly as the plan declared it — the diagnosis names this, never a rewrite. */
+    abstract val declared: String
+
+    /** safe to send: [wireId] is the agent id to put on the wire (equal to [declared] unless a token of this connection resolved into it). */
+    data class Accepted(
+        val wireId: String,
+        override val declared: String,
+    ) : SessionIdResolution()
+
+    /** a ref token minted by ANOTHER connection: joining it would be an unaccounted second holder of the same agent-side state. */
+    data class Foreign(
+        override val declared: String,
+    ) : SessionIdResolution()
 }
 
 /**
@@ -154,6 +190,22 @@ class AcpSessionConnection(private val pluginVersion: String) {
                 ),
             )
         }
+        // AC#4's foreign-ref gate, BEFORE anything is launched: a declared load/resume id is
+        // resolved against THIS connection — a plain agent id rides unchanged, a token this
+        // connection minted resolves to the agent id it carries, and a token another
+        // connection minted is refused typed. Sending it anyway would hand a persisting agent
+        // a second, unaccounted holder of one session's state.
+        val loadResolution = SessionRef.resolve(input.loadSessionId, connectionNonce)
+        val resumeResolution = SessionRef.resolve(input.resumeSessionId, connectionNonce)
+        val foreign = (listOf(loadResolution, resumeResolution)
+            .filterIsInstance<SessionIdResolution.Foreign>()).firstOrNull()
+        if (foreign != null) {
+            return AcpSessionOutcome.toOutput(refusal = AcpRefusal.ForeignSessionRef(foreign.declared))
+        }
+        val wireInput = input.copy(
+            loadSessionId = wireIdOf(loadResolution, input.loadSessionId),
+            resumeSessionId = wireIdOf(resumeResolution, input.resumeSessionId),
+        )
         if (!inFlight.compareAndSet(false, true)) {
             return AcpSessionOutcome.toOutput(
                 refusal = AcpRefusal.ActivePromptInProgress(
@@ -162,7 +214,7 @@ class AcpSessionConnection(private val pluginVersion: String) {
             )
         }
         try {
-            return runOnce(input)
+            return runOnce(wireInput)
         } finally {
             inFlight.set(false)
         }
@@ -182,6 +234,12 @@ class AcpSessionConnection(private val pluginVersion: String) {
             AcpSessionOutcome.toOutput(refusal = AcpRefusal.AgentTimeout(input.timeoutSeconds))
         } catch (e: UnsupportedProtocolVersionException) {
             AcpSessionOutcome.toOutput(refusal = AcpHandshake.refusal(e))
+        } catch (e: SessionOperationSignal) {
+            // the sessionOp helper labels the wire failure with the operation the plan
+            // declared; the answer keeps that name instead of a generic "acp" rejection.
+            AcpSessionOutcome.toOutput(
+                refusal = AcpRefusal.SessionOperationFailed(e.operation, e.reason),
+            )
         } catch (e: JsonRpcException) {
             AcpSessionOutcome.toOutput(
                 refusal = AcpRefusal.AgentRefusedRequest("acp", "${e.message} (code ${e.code})"),
@@ -245,25 +303,38 @@ class AcpSessionConnection(private val pluginVersion: String) {
                 mcpServers = input.mcpServers.map { it.toWire() },
             )
 
+            // AC#3: a session operation that fails on the wire is diagnosed as the operation
+            // that failed, not as the generic agent-rejected answer the outer catch would
+            // give — the plan declared a named operation, the refusal names it back.
+            suspend fun <T> sessionOp(name: String, block: suspend () -> T): T = try {
+                block()
+            } catch (e: JsonRpcException) {
+                throw SessionOperationSignal(name, "${e.message} (code ${e.code})")
+            }
+
             val session: ClientSession = if (input.loadSessionId.isNotBlank()) {
                 val history = mutableListOf<String>()
                 historicSink.set(history)
                 try {
-                    client.loadSession(
-                        sessionId = SessionId(input.loadSessionId),
-                        sessionParameters = parameters,
-                        operations = CapturingOperations(historicSink),
-                    )
+                    sessionOp("session/load") {
+                        client.loadSession(
+                            sessionId = SessionId(input.loadSessionId),
+                            sessionParameters = parameters,
+                            operations = CapturingOperations(historicSink),
+                        )
+                    }
                 } finally {
                     historicSink.set(null)
                     historic = history.toList()
                 }
             } else if (input.resumeSessionId.isNotBlank()) {
-                client.resumeSession(
-                    sessionId = SessionId(input.resumeSessionId),
-                    sessionParameters = parameters,
-                    operationsFactory = operationsFactory,
-                )
+                sessionOp("session/resume") {
+                    client.resumeSession(
+                        sessionId = SessionId(input.resumeSessionId),
+                        sessionParameters = parameters,
+                        operationsFactory = operationsFactory,
+                    )
+                }
             } else {
                 client.newSession(sessionParameters = parameters, operationsFactory = operationsFactory)
             }
@@ -348,8 +419,10 @@ class AcpSessionConnection(private val pluginVersion: String) {
 
             val listed = mutableListOf<String>()
             if (input.listSessions) {
-                client.listSessions(cwd = parameters.cwd, additionalDirectories = emptyList())
-                    .collect { info -> listed.add(info.sessionId.value) }
+                sessionOp("session/list") {
+                    client.listSessions(cwd = parameters.cwd, additionalDirectories = emptyList())
+                        .collect { info -> listed.add(info.sessionId.value) }
+                }
             }
 
             // AC#1: sequential turns, each awaited to its terminal event — the agent's own
@@ -378,7 +451,7 @@ class AcpSessionConnection(private val pluginVersion: String) {
 
             var logoutOk = false
             if (input.logout) {
-                client.logout()
+                sessionOp("logout") { client.logout() }
                 logoutOk = true
             }
 
@@ -389,7 +462,9 @@ class AcpSessionConnection(private val pluginVersion: String) {
                 runCatching { session.close() }
             }
             if (input.deleteOnExit) {
-                client.deleteSession(SessionId(session.sessionId.value))
+                sessionOp("session/delete") {
+                    client.deleteSession(SessionId(session.sessionId.value))
+                }
             }
 
             return AcpSessionOutcome.toOutput(
@@ -411,9 +486,9 @@ class AcpSessionConnection(private val pluginVersion: String) {
     private fun needsOf(input: AcpSessionInput): AcpSessionNeeds {
         val contents = input.turns.flatMap { it.content }
         return AcpSessionNeeds(
-            image = contents.any { it is AcpContentInput.Image },
-            audio = contents.any { it is AcpContentInput.Audio },
-            embeddedContext = contents.any { it is AcpContentInput.Resource },
+            image = contents.any { it.capability == "image" },
+            audio = contents.any { it.capability == "audio" },
+            embeddedContext = contents.any { it.capability == "embeddedContext" },
             mcpHttp = input.mcpServers.any { it.transport == "http" },
             mcpSse = input.mcpServers.any { it.transport == "sse" },
             load = input.loadSessionId.isNotBlank(),
@@ -461,6 +536,18 @@ class AcpSessionConnection(private val pluginVersion: String) {
 }
 
 private fun Set<String>.joinSortedToString(): String = sorted().joinToString("/")
+
+/** The id to put on the wire for one resolved declaration: its agent id, blank left blank. */
+private fun wireIdOf(resolution: SessionIdResolution, declared: String): String =
+    (resolution as? SessionIdResolution.Accepted)?.wireId ?: declared
+
+/**
+ * A wire failure inside one labeled session operation. Internal control flow, never an
+ * answer: [runOnce] converts it into the typed [AcpRefusal.SessionOperationFailed] the
+ * plan's declared operation deserves.
+ */
+private class SessionOperationSignal(val operation: String, val reason: String) :
+    Exception("session operation '$operation' failed: $reason")
 
 /** The declared MCP descriptor mapped onto the SDK's wire type — the only place it appears. */
 internal fun AcpMcpInput.toWire(): McpServer = when (transport) {
