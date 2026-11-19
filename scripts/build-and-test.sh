@@ -9,7 +9,8 @@ cd "$(dirname "$0")/.."
 . scripts/host-sdk.sh
 
 sdk_version="$(acp_sdk_version)"
-host_version="$(acp_select_host "$sdk_version")"
+acp_use_host "$sdk_version"
+host_version="$(acp_host_version)"
 # The build-guard kills JVM builds launched outside dev-jvm.slice, and the asdf gradle shim
 # refuses anything without a pinned version — so the absolute binary, an explicit JAVA_HOME,
 # and systemd-run --scope inside the slice, the way every gate row here is paid.

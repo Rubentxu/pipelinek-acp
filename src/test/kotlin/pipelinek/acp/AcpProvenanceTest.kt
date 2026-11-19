@@ -19,26 +19,45 @@ import org.junit.jupiter.api.Test
  */
 class AcpProvenanceTest {
 
+    /** The SDK version the build stamped, read from the provenance document itself. */
+    private fun declaredSdk(): SemVer {
+        val raw = AcpPluginDeclaration.declaredSdkVersion()
+        val parts = raw.split("-")[0].split(".").map { it.toInt() }
+        require(parts.size == 3) { "the stamped SDK version is not a numeric triple: '$raw'" }
+        return SemVer(parts[0], parts[1], parts[2])
+    }
+
     @Test
     fun `provenance is present in the built artifact's resources`() {
         // Fail-closed reading: required() throws rather than defaulting, so merely touching
         // these values proves the document exists and carries every key.
         assertNotNull(AcpPluginDeclaration.declaredVersion())
         val range = AcpPluginDeclaration.API_RANGE
+        val sdk = declaredSdk()
         assertTrue(
-            range.accepts(SemVer(0, 98, 0)),
-            "the range built against the 0.98.0 SDK must admit the 0.98.0 host, got $range",
+            range.accepts(sdk),
+            "the range built against SDK $sdk must admit that SDK's host, got $range",
         )
     }
 
     @Test
-    fun `the api range floor is the host floor the SDK requires and the ceiling is its next minor`() {
+    fun `the api range admits the SDK it was built against and ends at its next minor`() {
         val range = AcpPluginDeclaration.API_RANGE
-        // The seam this plugin needs (registryStep) exists from 0.98.0; a floor below it would
-        // claim compatibility with hosts that cannot run the plugin at all.
-        assertEquals(SemVer(0, 98, 0), range.fromInclusive)
-        assertTrue(range.accepts(SemVer(0, 98, 0)))
-        assertTrue(!range.accepts(SemVer(1, 0, 0)), "the range must not outlive the minor it was measured in")
+        val sdk = declaredSdk()
+        // The floor is derived (the newer of the compiled SDK and the measured host) and the
+        // ceiling is the next minor of the SDK — so the range must admit the SDK itself and
+        // end where that minor ends. Neither number is written here: a version typed into
+        // this test would be a second answer, and a stale one.
+        assertTrue(range.accepts(sdk), "the range must admit the SDK it was built against: $range")
+        assertEquals(
+            SemVer(sdk.major, sdk.minor + 1, 0),
+            range.untilExclusive,
+            "the ceiling is the next minor of the SDK",
+        )
+        assertTrue(
+            !range.accepts(SemVer(sdk.major, sdk.minor + 1, 0)),
+            "the range must not outlive the minor it was measured in",
+        )
     }
 
     @Test

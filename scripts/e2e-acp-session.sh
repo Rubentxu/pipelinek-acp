@@ -18,7 +18,7 @@ cd "$(dirname "$0")/.."
 # against: scripts/host-sdk.sh resolves the pair and puts that host in front of the
 # PATH, so this row and the build stage measure the same executable.
 . scripts/host-sdk.sh
-acp_select_host "$(acp_sdk_version)" > /dev/null
+acp_use_host "$(acp_sdk_version)"
 repo="$(pwd)"
 state="${XDG_STATE_HOME:-$HOME/.local/state}/pipelinek/pipelinek-acp-gate"
 mkdir -p "$state"

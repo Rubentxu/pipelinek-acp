@@ -3,10 +3,18 @@
 
 Speaks NDJSON-RPC for: initialize, session/new (with mcpServers echoed into the next
 prompt reply), session/prompt (multi-turn: keeps a per-session history and replies
-"turn<n>|seen:<history>"), session/load (streams HISTORIC updates then responds, so the
-client can prove history is separated from live events), session/resume, session/list,
-session/close, session/delete, session/set_mode, session/set_config_option, logout,
-authenticate.
+"mcp<n>:turn<n>|seen:<history>|kinds:<types>"), session/load (streams HISTORIC updates
+then responds, so the client can prove history is separated from live events),
+session/resume, session/list, session/close, session/delete, session/set_mode,
+session/set_config_option, logout, authenticate.
+
+The reply format, which the tests assert on literally:
+  mcp<n>       how many MCP descriptors the session creation carried — on the FIRST
+               turn only; a later turn of the same session carries no prefix.
+  turn<n>      which turn of this session this is.
+  seen:<...>   the user texts this session has been given, joined with ";".
+  kinds:<...>  the types of the content blocks this turn carried, sorted, joined
+               with ";".
 
 argv[1] = caps profile:
   full    loadSession, session.list/resume/delete/close, auth.logout, prompt image/audio/
@@ -22,6 +30,7 @@ Test scaffolding, not shipped: a second, independent implementation of the wire.
 """
 import sys
 import json
+import os
 import time
 
 CAPS = {
@@ -74,6 +83,15 @@ def witness(line):
             f.write(line + "\n")
 
 
+def witness_pid():
+    """The pid this agent runs under, so a test can prove the scope REAPED it.
+
+    The witness file also carries the close/delete lines; a PID line is none of
+    them, so the rows that assert on those still assert on what they mean.
+    """
+    witness("PID %d" % os.getpid())
+
+
 def main():
     global witness_path, slow_mode
     caps_key = sys.argv[1] if len(sys.argv) > 1 else "full"
@@ -83,6 +101,7 @@ def main():
     history = {}          # sessionId -> list of user texts
     mcp_seen = 0          # mcpServers count from the last session/new
     listed = ["agent-listed-7", "agent-listed-8"]
+    witness_pid()
 
     for line in sys.stdin:
         line = line.strip()

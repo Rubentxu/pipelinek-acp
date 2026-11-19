@@ -47,6 +47,23 @@ class AcpSessionRoundTripTest {
         ),
     )
 
+    /** The pid the fixture recorded, so a test can prove the scope REAPED the agent. */
+    private fun witnessedPid(witness: Path): Long {
+        val line = Files.readString(witness).lineSequence().firstOrNull { it.startsWith("PID ") }
+        return requireNotNull(line) { "the fixture recorded no pid in $witness" }
+            .removePrefix("PID ").trim().toLong()
+    }
+
+    /** Whether the process is gone, within a bounded window for the reaper to catch up. */
+    private fun isGone(pid: Long): Boolean {
+        val deadline = System.nanoTime() + 5_000_000_000
+        while (System.nanoTime() < deadline) {
+            if (!ProcessHandle.of(pid).map { it.isAlive }.orElse(false)) return true
+            Thread.sleep(50)
+        }
+        return false
+    }
+
     @Test
     fun `two sequential prompts on one session conserve the agent-side context`() {
         val out = AcpSessionConnection("0.0.0-test").run(
@@ -100,18 +117,46 @@ class AcpSessionRoundTripTest {
     @Test
     fun `a scope cut by cancellation releases the process and refuses typed`() {
         runBlocking {
-            val connection = AcpSessionConnection("0.0.0-test")
-            // the slow fixture sleeps 20 s inside the first prompt turn: 2 s cut it.
-            val out = connection.exchange(
-                input(fixture("full", "", "slow"), turns = listOf(acpTurn("slow turn")),
-                    copy = { it.copy(timeoutSeconds = 2) }),
+            val witness = Files.createTempFile("acp-session-cancel", ".txt")
+            try {
+                val connection = AcpSessionConnection("0.0.0-test")
+                // the slow fixture sleeps 20 s inside the first prompt turn: 2 s cut it.
+                val out = connection.exchange(
+                    input(fixture("full", witness.toString(), "slow"), turns = listOf(acpTurn("slow turn")),
+                        copy = { it.copy(timeoutSeconds = 2) }),
+                )
+                assertFalse(out.ok)
+                assertTrue(
+                    out.failureKind in setOf("ACP_AGENT_TIMEOUT", "ACP_TRANSPORT_CLOSED",
+                        "ACP_AGENT_EXITED", "ACP_ACTIVE_PROMPT_IN_PROGRESS"),
+                    "a cut scope answers transport/budget-side, got ${out.failureKind}",
+                )
+                // AC#1's release clause on the cancellation path, measured: the agent the
+                // cut scope launched must be gone, not merely unanswered.
+                val pid = witnessedPid(witness)
+                assertTrue(isGone(pid), "a cut scope must reap the agent process $pid")
+            } finally {
+                Files.deleteIfExists(witness)
+            }
+        }
+    }
+
+    @Test
+    fun `the scope reaps the agent process when the exchange ends`() {
+        // AC#1's release clause on the ordinary path, measured instead of asserted: the
+        // agent process the scope launched must be GONE when the scope ends. A scope that
+        // answers correctly while leaving its agent alive would still be a leak, and no
+        // answer's shape can tell that apart.
+        val witness = Files.createTempFile("acp-session-release", ".txt")
+        try {
+            val out = AcpSessionConnection("0.0.0-test").run(
+                input(fixture("full", witness.toString()), turns = listOf(acpTurn("hi"))),
             )
-            assertFalse(out.ok)
-            assertTrue(
-                out.failureKind in setOf("ACP_AGENT_TIMEOUT", "ACP_TRANSPORT_CLOSED",
-                    "ACP_AGENT_EXITED", "ACP_ACTIVE_PROMPT_IN_PROGRESS"),
-                "a cut scope answers transport/budget-side, got ${out.failureKind}",
-            )
+            assertTrue(out.ok, "the session must complete, got ${out.failureKind}: ${out.detail}")
+            val pid = witnessedPid(witness)
+            assertTrue(isGone(pid), "the agent process $pid must be gone when the scope ends")
+        } finally {
+            Files.deleteIfExists(witness)
         }
     }
 

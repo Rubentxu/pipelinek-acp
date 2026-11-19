@@ -48,6 +48,7 @@ object AcpPluginDeclaration {
     private const val DIGEST_KEY = "pipeline.acp.release.digest"
     private const val MIN_KEY = "pipeline.acp.compatibility.min"
     private const val UNTIL_KEY = "pipeline.acp.compatibility.untilExclusive"
+    private const val SDK_VERSION_KEY = "pipeline.acp.sdk.version"
 
     /** The step families this plugin contributes. The manifest and the contributor read THIS. */
     val STEPS: List<StepDefinition<*, *>> =
@@ -63,6 +64,15 @@ object AcpPluginDeclaration {
 
     /** The version this artifact declares — the value the build stamped into provenance. */
     fun declaredVersion(): String = required(VERSION_KEY)
+
+    /**
+     * The SDK version this artifact was compiled against, as the build stamped it.
+     *
+     * The api range is DERIVED from that version and from the host that will admit the
+     * artifact, so the SDK version is the fact a reader needs to check the range against —
+     * and it is read from the same provenance document, never written by hand.
+     */
+    fun declaredSdkVersion(): String = required(SDK_VERSION_KEY)
 
     /** Compatibility range, DERIVED at build time from the resolved SDK and the measured host. */
     val API_RANGE: PipelineKApiRange by lazy {

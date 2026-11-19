@@ -4,20 +4,24 @@
 //
 // **What this pays.** The plugin builds against the PUBLISHED SDK only — that is the premise
 // this front validates — so the gate is: (1) compile and unit-test against the sealed bundle,
-// (2) the assembled artifact carries the two documents admission reads, and (3) the installed
-// host actually admits the operator jar and runs a step that talks ACP to a deterministic
-// fixture agent over a pipe. No network, no credentials anywhere in the run.
+// (2) the assembled artifact carries the two documents admission reads and declares a range
+// that admits the host that will run it, and (3) the installed host actually admits the
+// operator jar and runs a step that talks ACP to a deterministic fixture agent over a pipe.
+//
+// No credentials anywhere in the run, and no network for the agent exchange: the fixture is
+// in-repo and speaks over a pipe. The build stage resolves the published SDK and the ACP
+// client from the Gradle cache or from Maven Central.
 //
 // **No hosted workflow runs this.** GitHub Actions, if it ever does anything here, is
 // distribution — never the tests and never the gate.
 //
 // To run it:
 //
-//   root="$(git rev-parse --show-toplevel)"
-//   state="${XDG_STATE_HOME:-$HOME/.local/state}/pipelinek/$(basename "$root")"
-//   mkdir -p "$state"
-//   pipelinek run --workspace "$root" --db "$state/run.sqlite" \
-//     --control-root "$state/control" "$root/pipeline.kts"
+//   scripts/run-gate.sh
+//
+// The script is what resolves the host and gives the run a state of its own; the
+// plain `pipelinek run` leaves both to the caller, and a caller who gets them
+// wrong measures a plugin no host admits.
 //
 // The SDK bundle directory the build resolves against is read from ACP_SDK_REPO (default
 // /tmp/pksdk); the host version the provenance range is derived from is measured from the
@@ -42,7 +46,8 @@ pipeline {
         }
         stage("admission documents") {
             // Cheap and mechanical, and it can fail: admission refuses a jar whose manifest
-            // is missing or whose SPI registration does not name the contributor.
+            // is missing, whose SPI registration does not name the contributor, or whose
+            // declared api range does not admit the host that will run it.
             sh("scripts/admission-documents.sh")
         }
         stage("e2e against the real host") {
