@@ -58,4 +58,40 @@ class AcpDslTest {
         assertEquals("", decoded.cwd)
         assertEquals(300L, decoded.timeoutSeconds)
     }
+
+    @Test
+    fun `acpTask lowers to one registryStep naming the task key with its full profile encoded`() {
+        val emitter = RecordingEmitter()
+        emitter.acpTask(
+            listOf("my-agent", "--acp"), "fix the test",
+            profile = AcpTaskProfile.READONLY, cwd = "work", budgetSeconds = 90, credentialRef = "ci",
+        )
+        assertEquals(AcpTaskStepDefinition.KEY, emitter.calledKey)
+        assertEquals(0, emitter.blockCalls)
+        val decoded = AcpTaskStepDefinition.InputCodec.decode(emitter.calledInput!!)
+        assertEquals(
+            AcpTaskInput(
+                command = listOf("my-agent", "--acp"),
+                prompt = "fix the test",
+                profile = AcpTaskProfile.READONLY,
+                cwd = "work",
+                budgetSeconds = 90,
+                credentialRef = "ci",
+            ),
+            decoded,
+        )
+    }
+
+    @Test
+    fun `acpTask defaults to the least-privilege profile the omitted arguments could mean`() {
+        val emitter = RecordingEmitter()
+        emitter.acpTask(listOf("agent"), "p")
+        val decoded = AcpTaskStepDefinition.InputCodec.decode(emitter.calledInput!!)
+        // READONLY by default: a script that says nothing about writing must not be
+        // delegated under a profile that promises confined mutation.
+        assertEquals(AcpTaskProfile.READONLY, decoded.profile)
+        assertEquals("", decoded.cwd)
+        assertEquals("", decoded.credentialRef)
+        assertEquals(300L, decoded.budgetSeconds)
+    }
 }

@@ -50,7 +50,7 @@ object AcpPluginDeclaration {
     private const val UNTIL_KEY = "pipeline.acp.compatibility.untilExclusive"
 
     /** The step families this plugin contributes. The manifest and the contributor read THIS. */
-    val STEPS: List<StepDefinition<*, *>> = listOf(AcpPromptStepDefinition)
+    val STEPS: List<StepDefinition<*, *>> = listOf(AcpPromptStepDefinition, AcpTaskStepDefinition)
 
     private val props: Map<String, String> by lazy { releaseProperties(AcpPluginDeclaration::class.java) }
 

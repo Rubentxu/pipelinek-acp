@@ -9,3 +9,5 @@ unzip -p "$JAR" META-INF/services/dev.rubentxu.pipeline.v2.domain.step.StepDefin
   | grep -qx 'pipelinek.acp.AcpContributor'
 unzip -p "$JAR" META-INF/pipelinek/plugin-manifest.json \
   | grep -q '"pipelinek.acp.prompt"'
+unzip -p "$JAR" META-INF/pipelinek/plugin-manifest.json \
+  | grep -q '"pipelinek.acp.task"'

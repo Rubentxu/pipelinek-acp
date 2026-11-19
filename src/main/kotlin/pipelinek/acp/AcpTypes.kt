@@ -120,6 +120,45 @@ sealed class AcpRefusal {
         override val detail: String = "the transport reported an error: $reason"
     }
 
+    /**
+     * The delegated task's profile could not be honoured by this target (PKH-133 AC#1/AC#4).
+     *
+     * Said as a refusal BEFORE the agent is launched: a promise about confinement, argv or
+     * budget that the target cannot keep is not negotiable inside the exchange — the honest
+     * answer is to start nothing and name what cannot be attested.
+     */
+    data class ProfileRefusal(val reason: String) : AcpRefusal() {
+        override val kindToken: String = "ACP_PROFILE_REFUSED"
+        override val detail: String = "the delegation profile was refused before launch: $reason"
+    }
+
+    /**
+     * The step declared a credential reference but the host does not offer the credential
+     * seam to plugins (PKH-133 AC#1).
+     *
+     * `credentials.basic` IS provisioned by the running host, but its contract type is not in
+     * the published SDK bundle, so the plugin reaches it structurally and fails CLOSED when
+     * the seam is missing rather than launching an uncredentialed agent and pretending.
+     */
+    data class CredentialSeamAbsent(val credentialRef: String, val reason: String) : AcpRefusal() {
+        override val kindToken: String = "ACP_CREDENTIAL_SEAM_ABSENT"
+        override val detail: String =
+            "credential '$credentialRef' was requested but the host seam is absent: $reason"
+    }
+
+    /**
+     * The credential seam answered, and the answer was not a usable secret (PKH-133 AC#1).
+     *
+     * The [reason] is the CLOSED case name the seam produced (`NotFound`, `StoreUnavailable`,
+     * ...). Secret material never reaches this type; neither the username nor the password is
+     * ever interpolated here, so the durable detail line cannot carry one by accident.
+     */
+    data class CredentialNotResolved(val credentialRef: String, val reason: String) : AcpRefusal() {
+        override val kindToken: String = "ACP_CREDENTIAL_NOT_RESOLVED"
+        override val detail: String =
+            "credential '$credentialRef' did not resolve: $reason"
+    }
+
     /** Our own machinery broke. Said apart from the agent's misbehaviour on purpose. */
     data class PluginInternal(val reason: String) : AcpRefusal() {
         override val kindToken: String = "ACP_PLUGIN_INTERNAL"

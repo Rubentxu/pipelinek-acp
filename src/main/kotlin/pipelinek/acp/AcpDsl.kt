@@ -57,3 +57,59 @@ fun StageScope.acpPrompt(
     val emitter: StepEmitter<StepBodyScope> = this
     emitter.acpPrompt(command, prompt, cwd, timeoutSeconds)
 }
+
+/**
+ * One isolated, profiled, budgeted delegation to an external agent (PKH-133).
+ *
+ * ```kotlin
+ * import pipelinek.acp.acpTask
+ * pipeline {
+ *     stages {
+ *         stage("Delegate") {
+ *             acpTask(listOf("my-agent", "--acp"), "fix the failing test",
+ *                 profile = AcpTaskProfile.READONLY, cwd = "work", budgetSeconds = 120)
+ *         }
+ *     }
+ * }
+ * ```
+ *
+ * What the DSL deliberately cannot say: an absolute cwd (the host's lease root fences it),
+ * a shell-wrapped argv ([AcpTaskIsolation] refuses it before launch), a secret (a credential
+ * travels by NAME via [credentialRef] and resolves through the host's seam). Lowering is the
+ * same single `registryStep` primitive as [acpPrompt] — one lowering, never two.
+ */
+fun <B : StepEmitter<B>> StepEmitter<B>.acpTask(
+    command: List<String>,
+    prompt: String,
+    profile: AcpTaskProfile = AcpTaskProfile.READONLY,
+    cwd: String = "",
+    budgetSeconds: Long = 300,
+    credentialRef: String = "",
+) {
+    registryStep(
+        stepKey = AcpTaskStepDefinition.KEY,
+        encodedInput = AcpTaskStepDefinition.InputCodec.encode(
+            AcpTaskInput(
+                command = command,
+                prompt = prompt,
+                profile = profile,
+                cwd = cwd,
+                budgetSeconds = budgetSeconds,
+                credentialRef = credentialRef,
+            ),
+        ),
+    )
+}
+
+/** The historic `StageScope` route; see the contract route for why both exist and are one. */
+fun StageScope.acpTask(
+    command: List<String>,
+    prompt: String,
+    profile: AcpTaskProfile = AcpTaskProfile.READONLY,
+    cwd: String = "",
+    budgetSeconds: Long = 300,
+    credentialRef: String = "",
+) {
+    val emitter: StepEmitter<StepBodyScope> = this
+    emitter.acpTask(command, prompt, profile, cwd, budgetSeconds, credentialRef)
+}
