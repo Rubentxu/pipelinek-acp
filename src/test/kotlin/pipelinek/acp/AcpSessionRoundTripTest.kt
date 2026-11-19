@@ -130,7 +130,8 @@ class AcpSessionRoundTripTest {
             // AC#3: exactly the two updates the agent streamed inside the load window —
             // and only them. The live prompt reply never mixes into the historic list.
             assertEquals(listOf("historic-1", "historic-2"), out.historicEvents)
-            assertEquals("turn1|seen:after load|kinds:text", out.turns.single().reply)
+            // The reply carries the fixture's mcp-prefix: zero MCP descriptors travelled.
+            assertEquals("mcp0:turn1|seen:after load|kinds:text", out.turns.single().reply)
             val seen = Files.readString(witness)
             // session/close was said (the agent announced it)…
             assertTrue(seen.contains("CLOSE"), "a normal exit says close, saw: $seen")
@@ -248,7 +249,7 @@ class AcpSessionRoundTripTest {
         assertTrue(out.ok, "image+resource must ride the full-caps session, got ${out.failureKind}")
         // the fixture echoes the block types it actually received — the gate sent them, it
         // did not silently degrade to text-only (AC#2).
-        assertEquals("turn1|seen:analyze|kinds:image,resource,text", out.turns.single().reply)
+        assertEquals("mcp0:turn1|seen:analyze|kinds:image;resource;text", out.turns.single().reply)
     }
 
     @Test
@@ -354,6 +355,6 @@ class AcpSessionRoundTripTest {
             ),
         )
         assertTrue(out.ok, "own token must load, got ${out.failureKind}: ${out.detail}")
-        assertEquals("turn1|seen:after token load|kinds:text", out.turns.single().reply)
+        assertEquals("mcp0:turn1|seen:after token load|kinds:text", out.turns.single().reply)
     }
 }

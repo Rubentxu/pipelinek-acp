@@ -167,12 +167,14 @@ def main():
         elif method == "session/set_config_option":
             p = msg["params"]
             opt = CONFIG_OPTIONS[0]
-            if p.get("configId") != opt["id"] or \
-               p.get("value", {}).get("value") not in {"low", "high"}:
+            # The SDK writes the option value as the RAW value — a bare JSON string for a
+            # select option — and not as an envelope object around it.
+            value = p.get("value")
+            if p.get("configId") != opt["id"] or value not in {"low", "high"}:
                 write({"jsonrpc": "2.0", "id": mid, "error":
                        {"code": -32603, "message": "invalid config"}})
             else:
-                refreshed = [dict(opt, currentValue=p["value"]["value"])]
+                refreshed = [dict(opt, currentValue=value)]
                 write({"jsonrpc": "2.0", "id": mid, "result":
                        {"configOptions": refreshed}})
         elif method == "logout":

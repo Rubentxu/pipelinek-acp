@@ -95,7 +95,12 @@ object AcpPluginDeclaration {
             delivery = provider.delivery,
             trust = provider.trust,
             contributions = PluginContributions(
-                steps = STEPS.map {
+                // In the codec's canonical order (by step key): the manifest codec writes the
+                // steps sorted that way and does not reorder them on the way back, so a
+                // declaration in any other order would make the document the build writes
+                // differ from the manifest this plugin declares — and the round trip that
+                // proves the two agree would fail.
+                steps = STEPS.sortedBy { it.contract.key.value }.map {
                     PluginStepContribution(it.contract.key, it.contract.requiredCapabilities)
                 },
                 directives = emptyList(),
