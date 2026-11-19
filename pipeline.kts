@@ -49,5 +49,14 @@ pipeline {
                 sh("scripts/e2e-acp.sh")
             }
         }
+        stage("e2e isolated task") {
+            // PKH-133's row, in scripts/e2e-acp-task.sh: two sequential acpTask delegations
+            // against the shared session counter (one fresh session per task — no parked
+            // connection) and a third run whose escaping cwd must be refused BEFORE launch,
+            // both asserted on the durable journal rather than on the run's exit code.
+            timeout(time = 20, unit = "MINUTES") {
+                sh("scripts/e2e-acp-task.sh")
+            }
+        }
     }
 }

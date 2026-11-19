@@ -2,3 +2,4 @@
 build/
 .kotlin/
 .claude/
+task-sessions.counter

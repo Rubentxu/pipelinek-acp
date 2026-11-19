@@ -2,6 +2,7 @@ package pipelinek.acp
 
 import com.agentclientprotocol.client.Client
 import com.agentclientprotocol.client.ClientOperationsFactory
+import com.agentclientprotocol.client.ClientSession
 import com.agentclientprotocol.client.UnsupportedProtocolVersionException
 import com.agentclientprotocol.common.ClientSessionOperations
 import com.agentclientprotocol.common.Event
@@ -14,15 +15,19 @@ import com.agentclientprotocol.model.SessionUpdate
 import com.agentclientprotocol.protocol.JsonRpcException
 import com.agentclientprotocol.protocol.Protocol
 import com.agentclientprotocol.transport.StdioTransport
+import java.nio.file.Path
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The whole ACP client for one step invocation: launch, connect, initialize, open a session,
@@ -41,6 +46,11 @@ import kotlinx.coroutines.withTimeout
  */
 class AcpConnection(private val pluginVersion: String) {
 
+    companion object {
+        /** How long the agent gets to act on session/cancel before its tree is reaped. */
+        const val CANCEL_GRACE_MILLIS: Long = 500
+    }
+
     /** The blocking entry point for tests and callers outside a coroutine. */
     fun run(input: AcpPromptInput): AcpExchange = runBlocking { exchange(input) }
 
@@ -54,7 +64,15 @@ class AcpConnection(private val pluginVersion: String) {
         val job = SupervisorJob()
         val scope = CoroutineScope(job + Dispatchers.IO)
         return try {
-            withTimeout(input.timeoutSeconds * 1000) { runExchange(input, process, scope) }
+            withTimeout(input.timeoutSeconds * 1000) {
+                runExchange(
+                    prompt = input.prompt,
+                    cwd = input.cwd.ifEmpty { System.getProperty("user.dir") },
+                    process = process,
+                    scope = scope,
+                    cancelOnUnwind = false,
+                )
+            }
         } catch (e: TimeoutCancellationException) {
             AcpExchange.Refused(AcpRefusal.AgentTimeout(input.timeoutSeconds))
         } catch (e: UnsupportedProtocolVersionException) {
@@ -62,36 +80,124 @@ class AcpConnection(private val pluginVersion: String) {
         } catch (e: JsonRpcException) {
             AcpExchange.Refused(AcpRefusal.AgentRefusedRequest("acp", "${e.message} (code ${e.code})"))
         } catch (e: CancellationException) {
-            // The SDK unwinds a pending request as a CancellationException when the transport
-            // dies under it. If OUR job is still active, that cancellation came from the other
-            // side of the pipe and it is a step failure; if it is not, the engine withdrew the
-            // step and rethrowing is the only honest answer.
-            if (currentCoroutineContext().isActive) {
-                val exit = process.exitCodeOrNull()
-                AcpExchange.Refused(
-                    if (exit != null) AcpRefusal.AgentExited(exit, process.stderrTail)
-                    else AcpRefusal.TransportClosed("the connection ended before the exchange completed"),
-                )
-            } else {
-                throw e
-            }
+            refuseUnderCancellationOrRethrow(e, process)
         } catch (e: Exception) {
-            val exit = process.exitCodeOrNull()
-            if (exit != null) {
-                AcpExchange.Refused(AcpRefusal.AgentExited(exit, process.stderrTail))
-            } else {
-                AcpExchange.Refused(AcpRefusal.TransportFailure(e.message ?: e.toString()))
-            }
+            classifyUnexpected(e, process)
         } finally {
             job.cancel()
             process.destroy()
         }
     }
 
+    /**
+     * One delegated task under the isolation rules of `acpTask` (PKH-133).
+     *
+     * Same one-shot lifecycle as [exchange], three rules stricter: the process starts with the
+     * CALLER-SUPPLIED environment and working directory (never the host's inherited world),
+     * [input].budgetSeconds bounds the whole exchange INCLUDING the cleanup that follows it,
+     * and when the exchange ends by budget or by the engine's cancellation, [runExchange] has
+     * already said session/cancel to the agent while the protocol still lived — the reap that
+     * follows here is the tree-wide backstop, so the budget cannot be widened by a deaf agent.
+     */
+    suspend fun exchangeTask(
+        input: AcpTaskInput,
+        environment: Map<String, String>,
+        workingDirectory: Path,
+    ): AcpExchange {
+        val process = AcpAgentProcess.launch(input.command, environment, workingDirectory)
+            .getOrElse { e -> return AcpExchange.Refused(AcpRefusal.AgentUnreachable(e.message ?: e.toString())) }
+        val job = SupervisorJob()
+        val scope = CoroutineScope(job + Dispatchers.IO)
+        return try {
+            withTimeout(input.budgetSeconds * 1000) {
+                runExchange(
+                    prompt = input.prompt,
+                    cwd = workingDirectory.toString(),
+                    process = process,
+                    scope = scope,
+                    cancelOnUnwind = true,
+                )
+            }
+        } catch (e: TimeoutCancellationException) {
+            AcpExchange.Refused(AcpRefusal.AgentTimeout(input.budgetSeconds))
+        } catch (e: UnsupportedProtocolVersionException) {
+            AcpExchange.Refused(AcpHandshake.refusal(e))
+        } catch (e: JsonRpcException) {
+            AcpExchange.Refused(AcpRefusal.AgentRefusedRequest("acp", "${e.message} (code ${e.code})"))
+        } catch (e: CancellationException) {
+            // The engine withdrew the step; session/cancel was said inside the unwinding.
+            refuseUnderCancellationOrRethrow(e, process)
+        } catch (e: Exception) {
+            classifyUnexpected(e, process)
+        } finally {
+            job.cancel()
+            // AC#2: the TREE dies inside the budget. The agent's own children are the
+            // delegation's effects; leaving them alive would widen the run past its deadline.
+            process.destroyTree()
+        }
+    }
+
+    /**
+     * session/cancel with the caller's fate sealed: neither the timeout path nor the
+     * cancellation path may be interrupted out of telling the agent to stop before its pipes
+     * are closed. [CANCEL_GRACE_MILLIS] is spent waiting for the agent to ACT on the
+     * notification — resolve its pending work, flush whatever it writes — because the reap in
+     * the caller's finally would otherwise race the very message we just sent. Bounded, so a
+     * deaf transport delays cleanup by the grace and never parks it.
+     */
+    private suspend fun sendCancelUnderNonCancellable(session: ClientSession) {
+        withContext(NonCancellable) {
+            try {
+                withTimeoutOrNull(2_000) { session.cancel() }
+                withTimeoutOrNull(CANCEL_GRACE_MILLIS + 500) {
+                    kotlinx.coroutines.delay(CANCEL_GRACE_MILLIS)
+                }
+            } catch (e: Exception) {
+                // The tree reap in the caller's finally is the backstop; a loud cancel failure
+                // here would replace the real outcome on the way out.
+            }
+        }
+    }
+
+    /** The PKH-132 rule, verbatim: a cancellation from the other side of the pipe is a step
+     * failure; one from the engine is the engine's to answer. */
+    private suspend fun refuseUnderCancellationOrRethrow(
+        e: CancellationException,
+        process: AcpAgentProcess,
+    ): AcpExchange {
+        return if (currentCoroutineContext().isActive) {
+            val exit = process.exitCodeOrNull()
+            AcpExchange.Refused(
+                if (exit != null) AcpRefusal.AgentExited(exit, process.stderrTail)
+                else AcpRefusal.TransportClosed("the connection ended before the exchange completed"),
+            )
+        } else {
+            throw e
+        }
+    }
+
+    private fun classifyUnexpected(e: Exception, process: AcpAgentProcess): AcpExchange {
+        val exit = process.exitCodeOrNull()
+        return if (exit != null) {
+            AcpExchange.Refused(AcpRefusal.AgentExited(exit, process.stderrTail))
+        } else {
+            AcpExchange.Refused(AcpRefusal.TransportFailure(e.message ?: e.toString()))
+        }
+    }
+
+    /**
+     * The exchange every entry point runs: initialize, the capability gate, one session, one
+     * prompt turn. [cancelOnUnwind] is the delegated-task rule (AC#2): when the prompt turn
+     * ends by cancellation of OUR coroutine — the budget firing or the engine withdrawing the
+     * run — the agent is told session/cancel in ACP words before the stack unwinds out, so
+     * its pending work resolves in the protocol rather than only in a kill.
+     */
     private suspend fun runExchange(
-        input: AcpPromptInput,
+        prompt: String,
+        cwd: String,
         process: AcpAgentProcess,
         scope: CoroutineScope,
+        cancelOnUnwind: Boolean,
     ): AcpExchange {
         val transport = StdioTransport(
             parentScope = scope,
@@ -110,21 +216,18 @@ class AcpConnection(private val pluginVersion: String) {
             }
             val session = client.newSession(
                 sessionParameters = SessionCreationParameters(
-                    cwd = input.cwd.ifEmpty { System.getProperty("user.dir") },
+                    cwd = cwd.ifEmpty { System.getProperty("user.dir") },
                     mcpServers = emptyList(),
                 ),
                 operationsFactory = ClientOperationsFactory { _, _ -> DenyingOperations },
             )
             val reply = StringBuilder()
             var stopReason = ""
-            session.prompt(listOf(ContentBlock.Text(text = input.prompt))).collect { event ->
-                when (event) {
-                    is Event.SessionUpdateEvent ->
-                        (event.update as? SessionUpdate.AgentMessageChunk)?.let { chunk ->
-                            (chunk.content as? ContentBlock.Text)?.let { reply.append(it.text) }
-                        }
-                    is Event.PromptResponseEvent -> stopReason = event.response.stopReason.name
-                }
+            try {
+                promptInto(session, prompt, reply) { stopReason = it }
+            } catch (e: CancellationException) {
+                if (cancelOnUnwind) sendCancelUnderNonCancellable(session)
+                throw e
             }
             if (stopReason.isEmpty()) {
                 return AcpExchange.Refused(
@@ -138,6 +241,24 @@ class AcpConnection(private val pluginVersion: String) {
             return AcpExchange.Completed(reply.toString(), stopReason)
         } finally {
             protocol.close()
+        }
+    }
+
+    /** One prompt turn: text chunks accumulate in [reply], the terminal event sets [onStop]. */
+    private suspend fun promptInto(
+        session: ClientSession,
+        prompt: String,
+        reply: StringBuilder,
+        onStop: (String) -> Unit,
+    ) {
+        session.prompt(listOf(ContentBlock.Text(text = prompt))).collect { event ->
+            when (event) {
+                is Event.SessionUpdateEvent ->
+                    (event.update as? SessionUpdate.AgentMessageChunk)?.let { chunk ->
+                        (chunk.content as? ContentBlock.Text)?.let { reply.append(it.text) }
+                    }
+                is Event.PromptResponseEvent -> onStop(event.response.stopReason.name)
+            }
         }
     }
 }

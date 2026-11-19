@@ -55,12 +55,12 @@ class AcpProvenanceTest {
         val provided = AcpContributor().registrations().map { it.stepKey.value }.sorted()
         // This equality IS the cross-check admission performs; drifting here is a runtime refusal.
         assertEquals(declared, provided)
-        assertEquals(listOf("pipelinek.acp.prompt"), declared)
+        assertEquals(listOf("pipelinek.acp.prompt", "pipelinek.acp.task"), declared)
     }
 
     @Test
     fun `registrations carry real provider metadata and not the legacy default`() {
-        val registration = AcpContributor().registrations().single()
+        val registration = AcpContributor().registrations().first()
         // The default StepDefinitionContributor.registrations() stamps publisher
         // "legacy-external"; overriding it must actually replace it, or the audit projection
         // this override exists for silently never happens.

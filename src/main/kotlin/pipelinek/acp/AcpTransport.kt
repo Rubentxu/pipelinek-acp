@@ -50,6 +50,27 @@ class AcpAgentProcess internal constructor(
         process.destroy()
     }
 
+    /**
+     * Kills the process AND every descendant it started, then waits up to [graceMillis] for
+     * the tree to be gone. PKH-133 AC#2: a budget or a cancellation that reaps only the agent
+     * leaves its children holding pipes, files and network — the tree is the unit of cleanup.
+     * A descendant that ignores SIGTERM is SIGKILLed after the grace window; cleanup is
+     * bounded, never hopeful. Returns the number of descendants killed.
+     */
+    fun destroyTree(graceMillis: Long = 2_000): Int {
+        val descendants = process.descendants().filter { it.isAlive }.toList()
+        process.destroy()
+        descendants.forEach { it.destroy() }
+        val deadline = System.nanoTime() + graceMillis * 1_000_000
+        var remaining = descendants.filter { it.isAlive }
+        while (remaining.isNotEmpty() && System.nanoTime() < deadline) {
+            Thread.sleep(10)
+            remaining = descendants.filter { it.isAlive }
+        }
+        remaining.forEach { it.destroyForcibly() }
+        return descendants.size
+    }
+
     companion object {
         /** The most stderr bytes kept for diagnostics; older lines are evicted first. */
         const val STDERR_CAP_BYTES: Int = 64 * 1024
@@ -61,12 +82,30 @@ class AcpAgentProcess internal constructor(
          * plugin's arguments and open an injection seam the step's input should not have.
          * A missing or non-executable entry arrives back as [AcpRefusal.AgentUnreachable].
          */
-        fun launch(command: List<String>): Result<AcpAgentProcess> {
+        fun launch(command: List<String>): Result<AcpAgentProcess> = launch(command, null, null)
+
+        /**
+         * Launches [command] with an EXPLICIT environment and working directory.
+         *
+         * PKH-133: the isolated task never inherits the host JVM's environment — [environment]
+         * replaces it wholesale (ProcessBuilder's map starts empty when the caller clears it),
+         * so a secret the host happens to hold cannot reach the agent by osmosis. Passing null
+         * keeps the historic inherit-everything behaviour for the PKH-132 one-shot step.
+         */
+        fun launch(
+            command: List<String>,
+            environment: Map<String, String>?,
+            workingDirectory: java.nio.file.Path?,
+        ): Result<AcpAgentProcess> {
             require(command.isNotEmpty()) { "the agent command is empty; there is nothing to launch" }
             return runCatching {
-                val process = ProcessBuilder(command)
-                    .redirectErrorStream(false)
-                    .start()
+                val builder = ProcessBuilder(command).redirectErrorStream(false)
+                if (workingDirectory != null) builder.directory(workingDirectory.toFile())
+                if (environment != null) {
+                    builder.environment().clear()
+                    builder.environment().putAll(environment)
+                }
+                val process = builder.start()
                 val ring = BoundedLineRing(STDERR_CAP_BYTES)
                 // A daemon thread, not a coroutine: the drain must outlive any dispatcher
                 // the caller happens to be on, and must stop on its own at EOF, which
