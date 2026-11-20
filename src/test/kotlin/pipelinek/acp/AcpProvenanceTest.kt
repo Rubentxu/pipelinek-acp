@@ -4,6 +4,8 @@ import dev.rubentxu.pipeline.v2.domain.PluginStepId
 import dev.rubentxu.pipeline.v2.domain.step.PluginManifestCodec
 import dev.rubentxu.pipeline.v2.domain.step.PluginManifestDecodeResult
 import dev.rubentxu.pipeline.v2.domain.step.SemVer
+import dev.rubentxu.pipeline.v2.domain.step.StepDefinitionContributor
+import java.util.ServiceLoader
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -94,5 +96,27 @@ class AcpProvenanceTest {
         // this override exists for silently never happens.
         assertEquals("pipelinek-acp", registration.provider.publisher)
         assertEquals(PluginStepId("pipelinek.acp.prompt"), registration.stepKey)
+    }
+
+    @Test
+    fun `the host discovers this plugin through the published SPI, with no change to the core`() {
+        // AC#1's discovery half, in the unit lane: the contributor is found the way the
+        // host finds it — through the service registration of the PUBLISHED SPI — and the
+        // steps it brings are the ones the manifest declares. Nothing here touches the
+        // compiler or the core's registry: the plugin is discovered, not registered.
+        val discovered = ServiceLoader
+            .load(StepDefinitionContributor::class.java, javaClass.classLoader)
+            .toList()
+        val ours = discovered.filter { it.id == AcpPluginDeclaration.CONTRIBUTOR_ID }
+        assertEquals(
+            1,
+            ours.size,
+            "the SPI must name this contributor exactly once: ${discovered.map { it.id }}",
+        )
+        assertEquals(
+            AcpPluginDeclaration.STEPS.map { it.contract.key.value }.sorted(),
+            ours.single().definitions().map { it.contract.key.value }.sorted(),
+            "the discovered contributor must bring exactly the declared steps",
+        )
     }
 }

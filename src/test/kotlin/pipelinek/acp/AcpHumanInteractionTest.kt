@@ -41,7 +41,9 @@ class AcpHumanInteractionTest {
         )
         val answer = runBlocking {
             AcpPermissionPolicy.decide(
-                profile = AcpTaskProfile.READONLY,
+                // The profile must NOT be the blocker here: under a profile that already
+                // refuses the effect, the human leg would never be exercised.
+                profile = AcpTaskProfile.WRITE_RESTRICTED,
                 authority = authority,
                 kind = ToolKind.EDIT,
                 offeredOptions = listOf(
