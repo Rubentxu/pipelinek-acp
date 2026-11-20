@@ -52,7 +52,13 @@ object AcpPluginDeclaration {
 
     /** The step families this plugin contributes. The manifest and the contributor read THIS. */
     val STEPS: List<StepDefinition<*, *>> =
-        listOf(AcpPromptStepDefinition, AcpTaskStepDefinition, AcpSessionStepDefinition)
+        listOf(
+            AcpPromptStepDefinition,
+            AcpTaskStepDefinition,
+            AcpSessionStepDefinition,
+            AcpReactiveStepDefinition,
+            AcpReactionStepDefinition,
+        )
 
     private val props: Map<String, String> by lazy { releaseProperties(AcpPluginDeclaration::class.java) }
 

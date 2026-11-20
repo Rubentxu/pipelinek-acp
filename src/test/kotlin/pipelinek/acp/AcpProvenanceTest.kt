@@ -75,7 +75,13 @@ class AcpProvenanceTest {
         // This equality IS the cross-check admission performs; drifting here is a runtime refusal.
         assertEquals(declared, provided)
         assertEquals(
-            listOf("pipelinek.acp.prompt", "pipelinek.acp.session", "pipelinek.acp.task"),
+            listOf(
+                "pipelinek.acp.prompt",
+                "pipelinek.acp.reaction",
+                "pipelinek.acp.reactive",
+                "pipelinek.acp.session",
+                "pipelinek.acp.task",
+            ),
             declared,
         )
     }

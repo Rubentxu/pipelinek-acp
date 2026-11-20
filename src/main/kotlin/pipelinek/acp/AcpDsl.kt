@@ -257,3 +257,61 @@ fun StageScope.acpSession(
         deleteOnExit = deleteOnExit,
     )
 }
+
+/**
+ * One agent turn that REACTS to what the agent says while it runs.
+ *
+ * ```kotlin
+ * import pipelinek.acp.acpReactive
+ * pipeline {
+ *     stages {
+ *         stage("Agent") {
+ *             acpReactive(listOf("my-agent", "--acp"), "fix the failing test")
+ *         }
+ *     }
+ * }
+ * ```
+ *
+ * Where `acpPrompt` waits for the agent's answer, this step declares a BODY and dispatches
+ * it once per update the agent sends. The body holds exactly one child — the reaction — and
+ * the plugin names it by its address, so the engine resolves the same slot every time and
+ * every reaction travels with its own durable identity.
+ *
+ * The body is written by the plugin, not by the author: the reaction is the plugin's own
+ * hook, and a body the author filled with arbitrary steps would leave the plugin unable to
+ * name the child it has to dispatch.
+ */
+fun <B : StepEmitter<B>> StepEmitter<B>.acpReactive(
+    command: List<String>,
+    prompt: String,
+    cwd: String = "",
+    timeoutSeconds: Long = 300,
+) {
+    registryBlock(
+        stepKey = AcpReactiveStepDefinition.KEY,
+        encodedInput = AcpPromptStepDefinition.InputCodec.encode(
+            AcpPromptInput(
+                command = command,
+                prompt = prompt,
+                cwd = cwd,
+                timeoutSeconds = timeoutSeconds,
+            ),
+        ),
+    ) {
+        registryStep(
+            stepKey = AcpReactionStepDefinition.KEY,
+            encodedInput = AcpReactionStepDefinition.InputCodec.encode(AcpReactionInput()),
+        )
+    }
+}
+
+/** The historic `StageScope` route; see the contract route for why both exist and are one. */
+fun StageScope.acpReactive(
+    command: List<String>,
+    prompt: String,
+    cwd: String = "",
+    timeoutSeconds: Long = 300,
+) {
+    val emitter: StepEmitter<StepBodyScope> = this
+    emitter.acpReactive(command, prompt, cwd, timeoutSeconds)
+}
