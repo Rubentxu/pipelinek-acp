@@ -155,13 +155,18 @@ class AcpHumanInteractionTest {
     @Test
     fun `the plugin declares no capability that could carry a human answer`() {
         // The plugin's own half of the measurement: no step of this plugin asks a human,
-        // because nothing published to plugins can.
+        // because nothing published to plugins can. The vocabulary of the check is the
+        // naming of the human seams themselves, so a capability that could carry an answer
+        // under ANY of those names is refused, not only one called "input".
+        val humanSeamWords = listOf("input", "human", "decision", "elicitation", "permission")
         val declared = AcpPluginDeclaration.STEPS.flatMapTo(linkedSetOf()) {
             it.contract.requiredCapabilities
         }
         assertTrue(
-            declared.none { it.key.contains("input", ignoreCase = true) },
-            "no plugin step may declare a human-interaction capability it cannot honour: $declared",
+            declared.none { capability ->
+                humanSeamWords.any { word -> capability.key.contains(word, ignoreCase = true) }
+            },
+            "no plugin step may declare a capability that could carry a human answer: $declared",
         )
     }
 
