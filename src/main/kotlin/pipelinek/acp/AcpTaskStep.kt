@@ -13,6 +13,8 @@ import dev.rubentxu.pipeline.v2.domain.step.StepDefinition
 import dev.rubentxu.pipeline.v2.domain.step.StepHandler
 import dev.rubentxu.pipeline.v2.domain.step.StepCapability
 import dev.rubentxu.pipeline.v2.domain.workspace.ExecutionLocation as WorkspaceExecutionLocation
+import dev.rubentxu.pipeline.v2.runtime.input.INPUT_DECISIONS_CAPABILITY
+import dev.rubentxu.pipeline.v2.runtime.input.InputDecisions
 import java.nio.file.Path
 import kotlinx.serialization.json.Json
 
@@ -77,10 +79,13 @@ object AcpTaskStepDefinition : StepDefinition<AcpTaskInput, AcpTaskOutput> {
             // facts this step consumes; credentials.basic is contributed unconditionally by
             // the host — a run with no store answers NotConfigured rather than hiding the
             // capability — so declaring it costs admission nothing and says honestly what the
-            // handler reads.
+            // handler reads. The human-decision capability is the third: the agent may ask
+            // the client for a person's input, and the port is how that question reaches a
+            // person through the service.
             requiredCapabilities = setOf(
                 EXECUTION_LOCATION_CAPABILITY,
                 StepCapability("credentials.basic"),
+                INPUT_DECISIONS_CAPABILITY,
             ),
         )
     }
@@ -107,9 +112,20 @@ object AcpTaskStepDefinition : StepDefinition<AcpTaskInput, AcpTaskOutput> {
         }
 
         val effectiveCwd = if (input.cwd.isBlank()) workspaceRoot else workspaceRoot.resolve(input.cwd).normalize()
-        // PKH-134: the reverse leg is fenced to the same lease root the cwd is resolved
+        // The port the elicitation asks through: the runtime binds it under the capability
+        // this step declares, so the question the agent asks reaches a person through the
+        // service and the answer comes back through the very port.
+        val decisions: InputDecisions =
+            context.capabilities.get(INPUT_DECISIONS_CAPABILITY, InputDecisions::class)
+        // The reverse leg is fenced to the same lease root the cwd is resolved
         // against, and gated by the declared authority (null authority = deny-by-default).
-        val reverse = AcpReverseSession(effectiveCwd, input.profile, input.authority)
+        val reverse = AcpReverseSession(
+            workspaceRoot = effectiveCwd,
+            profile = input.profile,
+            authority = input.authority,
+            humanDecision = AcpHumanDecision(decisions),
+            budgetMillis = input.budgetSeconds * 1000,
+        )
         val exchange = AcpConnection(AcpPluginDeclaration.declaredVersion()).exchangeTask(
             input = input,
             environment = AcpTaskIsolation.childEnvironment(credential),

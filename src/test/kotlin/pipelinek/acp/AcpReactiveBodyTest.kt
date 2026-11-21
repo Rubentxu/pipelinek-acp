@@ -17,6 +17,7 @@ import dev.rubentxu.pipeline.v2.domain.step.EncodedStepValue
 import dev.rubentxu.pipeline.v2.domain.step.SlotResolution
 import dev.rubentxu.pipeline.v2.domain.step.StepCapability
 import dev.rubentxu.pipeline.v2.domain.step.StepCapabilityAccess
+import dev.rubentxu.pipeline.v2.runtime.input.INPUT_DECISIONS_CAPABILITY
 import dev.rubentxu.pipeline.v2.domain.step.StepHandlerContext
 import dev.rubentxu.pipeline.v2.domain.step.resolveBodyExecutionPolicy
 import dev.rubentxu.pipeline.v2.dsl.StepEmitter
@@ -68,15 +69,14 @@ class AcpReactiveBodyTest {
     }
 
     /** Fail-closed capability access: a capability that was not bound is an error, not a default. */
-    private class SingleCapability(
-        private val key: StepCapability,
-        private val value: Any,
+    private class BoundCapabilities(
+        private val values: Map<StepCapability, Any>,
     ) : StepCapabilityAccess {
-        override fun available(): Set<StepCapability> = setOf(key)
+        override fun available(): Set<StepCapability> = values.keys
 
         @Suppress("UNCHECKED_CAST")
         override fun <T : Any> get(key: StepCapability, type: KClass<T>): T {
-            require(key == this.key) { "capability '$key' is not bound" }
+            val value = values[key] ?: error("capability '$key' is not bound")
             require(type.isInstance(value)) { "capability '$key' does not carry a ${type.simpleName}" }
             return value as T
         }
@@ -185,7 +185,14 @@ class AcpReactiveBodyTest {
                 StepHandlerContext(
                     runId = RunId("run-reactive"),
                     stepIndex = 0,
-                    capabilities = SingleCapability(BODY_SLOT_CAPABILITY, slot),
+                    capabilities = BoundCapabilities(
+                        mapOf(
+                            BODY_SLOT_CAPABILITY to slot,
+                            // The reactive step declares the human-decision capability and
+                            // reads the port: this turn never asks a person anything.
+                            INPUT_DECISIONS_CAPABILITY to AcpUnansweredInputDecisions(),
+                        ),
+                    ),
                 ),
             )
         }

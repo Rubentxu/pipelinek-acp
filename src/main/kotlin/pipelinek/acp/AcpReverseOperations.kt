@@ -97,11 +97,16 @@ class AcpReverseJournal {
  * processes that outlive release are killed, and [reapTerminals] runs inside the
  * exchange's cleanup budget: an agent-requested terminal is the delegation's effect.
  *
- * ## Elicitation (AC#4)
- * There is no authorized-human seam published to plugins, and the client therefore does
- * not advertise the elicitation capability: an agent that asks anyway gets the protocol's
- * explicit `cancel` — a refusal said in the vocabulary, not a silence, and never an
- * auto-answer in a person's name. No schema field is invented and no secret is asked for.
+ * ## Elicitation
+ * An elicitation is the agent asking the client for a person's input, so it is the one
+ * reverse operation that is answered by a PERSON: the client asks through the human-decision
+ * port and reports what the person said. The answer travels to the agent as the answer to
+ * the agent's own question and grants nothing — a permission is still the declared
+ * authority's to decide.
+ *
+ * A client with no human-decision seam (a reverse leg built without one) still answers the
+ * protocol's explicit `cancel`: a refusal said in the vocabulary, not a silence, and never
+ * an auto-answer in a person's name. No schema field is invented and no secret is asked for.
  */
 class AcpReverseOperations(
     private val sessionId: com.agentclientprotocol.model.SessionId,
@@ -110,6 +115,8 @@ class AcpReverseOperations(
     private val authority: AcpAuthority?,
     private val journal: AcpReverseJournal,
     private val ledger: AcpPermissionLedger,
+    private val humanDecision: AcpHumanDecision? = null,
+    private val waitBudgetMillis: () -> Long? = { null },
 ) : ClientSessionOperations {
 
     private val terminals = ConcurrentHashMap<String, TerminalHandle>()
@@ -377,15 +384,32 @@ class AcpReverseOperations(
     }
 
     // ----------------------------------------------------------------------------------
-    // Elicitation — AC#4
+    // Elicitation
     // ----------------------------------------------------------------------------------
 
     override suspend fun createElicitation(request: CreateElicitationRequest): CreateElicitationResponse {
-        // No capability is advertised for it and no human seam is published to plugins: the
-        // honest answer is the protocol's explicit cancel — never an invented field value,
-        // never a silent drop, and never a response given "in the user's name".
-        journal.record("elicitation refused (no authorized interaction seam)")
-        return CreateElicitationResponse(ElicitationAction.Cancel, null)
+        val human = humanDecision
+        if (human == null) {
+            // No seam to ask through: the honest answer is the protocol's explicit cancel —
+            // never an invented field value, never a silent drop, and never a response
+            // given "in the user's name".
+            journal.record("elicitation refused (no human-decision seam)")
+            return CreateElicitationResponse(ElicitationAction.Cancel, null)
+        }
+        // The question the person receives is the agent's own question: what it asked, and
+        // the URL it wants the person to visit when it asked with one.
+        val answer = human.ask(questionOf(request), waitBudgetMillis())
+        journal.record("elicitation ${answer.detail}")
+        return CreateElicitationResponse(answer.action, null)
+    }
+
+    /**
+     * The question a person is asked: the agent's message, plus the URL when the agent
+     * asked with one. A person cannot answer a question nobody can read.
+     */
+    private fun questionOf(request: CreateElicitationRequest): String {
+        val url = (request.mode as? com.agentclientprotocol.model.ElicitationMode.Url)?.url
+        return if (url.isNullOrBlank()) request.message else "${request.message}\n$url"
     }
 
     override suspend fun completeElicitation(notification: CompleteElicitationNotification) {
@@ -533,15 +557,22 @@ internal class BoundedByteRing(private val capBytes: Long) {
  * The per-exchange holder that lets [AcpConnection] build session operations through the
  * SDK's factory while keeping the journal, the ledger and the terminal registry outside the
  * protocol types — the same "wire types never leave the connection boundary" rule.
+ *
+ * [humanDecision] is the port the elicitation asks through, and [budgetMillis] is the
+ * turn's own budget: the person is asked with the time the turn has left, so a question
+ * outlives neither the turn nor the run.
  */
 class AcpReverseSession(
     private val workspaceRoot: Path,
     private val profile: AcpTaskProfile,
     private val authority: AcpAuthority?,
+    private val humanDecision: AcpHumanDecision? = null,
+    private val budgetMillis: Long? = null,
 ) {
     val ledger = AcpPermissionLedger()
     val journal = AcpReverseJournal()
     private val instances = java.util.concurrent.ConcurrentLinkedQueue<AcpReverseOperations>()
+    private val startedAtMillis: Long = System.currentTimeMillis()
 
     /**
      * The fs capability to advertise at initialize: the client promises to answer
@@ -563,8 +594,29 @@ class AcpReverseSession(
         profile != AcpTaskProfile.READONLY
 
     fun factory(): ClientOperationsFactory = ClientOperationsFactory { sessionId, _ ->
-        AcpReverseOperations(sessionId, workspaceRoot, profile, authority, journal, ledger)
+        AcpReverseOperations(
+            sessionId = sessionId,
+            workspaceRoot = workspaceRoot,
+            profile = profile,
+            authority = authority,
+            journal = journal,
+            ledger = ledger,
+            humanDecision = humanDecision,
+            waitBudgetMillis = ::remainingBudgetMillis,
+        )
             .also { instances.add(it) }
+    }
+
+    /**
+     * What is left of the turn's budget, which is what the person may still take.
+     *
+     * The bound is read at the moment the question is asked, not when the session was
+     * built: a turn that spent its budget before the agent asked has nothing left to
+     * offer, and a question that outlives the turn would ask a person about a run that
+     * has already ended.
+     */
+    private fun remainingBudgetMillis(): Long? = budgetMillis?.let { total ->
+        (total - (System.currentTimeMillis() - startedAtMillis)).coerceAtLeast(0L)
     }
 
     /**
