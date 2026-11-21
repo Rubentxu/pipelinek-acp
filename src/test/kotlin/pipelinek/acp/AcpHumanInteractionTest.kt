@@ -63,7 +63,7 @@ class AcpHumanInteractionTest {
     }
 
     @Test
-    fun `an effect nobody declared is denied even when the agent offers it`() {
+    fun `an absent authority denies everything, even when the agent offers it`() {
         val answer = runBlocking {
             AcpPermissionPolicy.decide(
                 profile = AcpTaskProfile.READONLY,
@@ -82,6 +82,35 @@ class AcpHumanInteractionTest {
             RequestPermissionOutcome.Cancelled,
             answer.outcome,
             "an absent authority denies everything: the absence IS the rule",
+        )
+    }
+
+    @Test
+    fun `an authority that exists and does not declare the effect denies it`() {
+        // The case the absent authority cannot show: here the authority EXISTS and simply
+        // does not declare this effect. The profile cannot be the blocker — reading is
+        // allowed under READONLY — so the ONLY thing that can deny this is the clause that
+        // reads the declared effects. A law that measures it with a null authority would
+        // pass with that clause removed, because the absence of the authority would have
+        // denied the request anyway.
+        val answer = runBlocking {
+            AcpPermissionPolicy.decide(
+                profile = AcpTaskProfile.READONLY,
+                authority = AcpAuthority(allowedEffects = emptyList()),
+                kind = ToolKind.READ,
+                offeredOptions = listOf(
+                    PermissionOption(
+                        optionId = PermissionOptionId("opt-once"),
+                        name = "allow once",
+                        kind = PermissionOptionKind.ALLOW_ONCE,
+                    ),
+                ),
+            )
+        }
+        assertEquals(
+            RequestPermissionOutcome.Cancelled,
+            answer.outcome,
+            "an authority that does not declare the effect must not grant it, however it is offered",
         )
     }
 
