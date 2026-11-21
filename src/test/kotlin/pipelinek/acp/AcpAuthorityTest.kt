@@ -18,10 +18,10 @@ import org.junit.jupiter.api.Test
  * the profile ceiling, the runtime authority declared by the pipeline, and the option the
  * agent actually offered — never an invented one, and never a grant without a declaration.
  *
- * The human leg of that intersection is deliberately fail-closed: the published seam offers
- * no authorized-interaction capability to plugins, so a rule that demands a human denies —
- * the safe reading of "política humana autorizada" while the seam does not exist (the
- * PKACP-SDK-02 pattern: absent machinery is named, never pretended).
+ * The human leg of that intersection is deliberately fail-closed: a person's answer is not
+ * an authorization. The published seam carries what a person said to the agent's own
+ * question; it carries no grant, so a rule that demands a human denies rather than being
+ * granted in the person's name.
  */
 class AcpAuthorityTest {
 
@@ -108,14 +108,14 @@ class AcpAuthorityTest {
     }
 
     @Test
-    fun `a human-required rule fails closed while no interaction seam exists`() {
+    fun `a human-required rule fails closed, an answer is not an authorization`() {
         val humanRead = AcpAuthority(
             allowedEffects = listOf(AcpToolEffect.READ),
             humanRequiredEffects = listOf(AcpToolEffect.READ),
         )
         assertTrue(
             decide(AcpTaskProfile.READONLY, humanRead, ToolKind.READ) is RequestPermissionOutcome.Cancelled,
-            "without an authorized-interaction seam the human leg denies, it never auto-approves",
+            "the human leg denies, it never turns an answer into a grant",
         )
     }
 

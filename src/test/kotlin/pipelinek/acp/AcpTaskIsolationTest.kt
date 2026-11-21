@@ -6,6 +6,7 @@ import dev.rubentxu.pipeline.v2.domain.step.CapabilityRefusedException
 import dev.rubentxu.pipeline.v2.domain.step.EXECUTION_LOCATION_CAPABILITY
 import dev.rubentxu.pipeline.v2.domain.step.StepCapability
 import dev.rubentxu.pipeline.v2.domain.step.StepCapabilityAccess
+import dev.rubentxu.pipeline.v2.runtime.input.INPUT_DECISIONS_CAPABILITY
 import dev.rubentxu.pipeline.v2.domain.step.StepHandlerContext
 import dev.rubentxu.pipeline.v2.domain.workspace.ExecutionLocation
 import dev.rubentxu.pipeline.v2.domain.workspace.WorkspaceLease
@@ -39,6 +40,10 @@ class AcpTaskIsolationTest {
             mapOf(
                 EXECUTION_LOCATION_CAPABILITY to
                     ExecutionLocation(WorkspaceLease.Managed(root), root),
+                // The step declares the human-decision capability and reads the port
+                // before it does anything else, so the table binds it: this turn never
+                // asks a person anything.
+                INPUT_DECISIONS_CAPABILITY to AcpUnansweredInputDecisions(),
             ),
         )
 
@@ -74,6 +79,7 @@ class AcpTaskIsolationTest {
             mapOf(
                 EXECUTION_LOCATION_CAPABILITY to ExecutionLocation(WorkspaceLease.Managed(root), root),
                 StepCapability("credentials.basic") to source,
+                INPUT_DECISIONS_CAPABILITY to AcpUnansweredInputDecisions(),
             ),
         )
 

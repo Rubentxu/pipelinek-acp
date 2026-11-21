@@ -20,10 +20,11 @@ import kotlinx.coroutines.CompletableDeferred
  *    effects past reading);
  * 2. the AUTHORITY is the runtime policy the pipeline declared through the DSL — without a
  *    declaration nothing is granted, which keeps PKH-132's deny-by-default as the default;
- * 3. the HUMAN leg fails closed while the published seam offers no authorized-interaction
- *    capability to plugins: a rule that requires a human denies rather than auto-approving
- *    in the human's name (the PKACP-SDK-02 pattern — absent machinery is named, never
- *    pretended; and "no confundir respuesta humana con autorización" cuts both ways);
+ * 3. the HUMAN leg fails closed: a rule that requires a human denies, because an answer
+ *    is not an authorization. The published seam carries a person's answer to the agent's
+ *    own question (see [AcpHumanDecision]); it carries no grant, and the port's submitter
+ *    is attribution. A human-required effect therefore denies, rather than being granted
+ *    in the person's name;
  * 4. the offered OPTIONS are the last word: a grant selects an optionId the agent offered,
  *    never one the client invented — an invented id is a protocol lie that could authorize
  *    an action the agent never proposed.
@@ -62,9 +63,10 @@ data class AcpAuthority(
     /**
      * effect classes whose grant additionally requires an authorized human answer.
      *
-     * With no human-interaction seam published to plugins, a human-required effect DENIES
-     * (see the class doc); the declaration is honoured as "not without a person", which is
-     * the safe half of the promise, and the refusal says so.
+     * An answer is not an authorization: the published seam carries what a person said to
+     * the agent's own question (see [AcpHumanDecision]), not a grant. So a human-required
+     * effect DENIES (see the class doc); the declaration is honoured as "not without a
+     * person", which is the safe half of the promise, and the refusal says so.
      */
     val humanRequiredEffects: List<AcpToolEffect> = emptyList(),
 )
@@ -108,7 +110,7 @@ object AcpPermissionPolicy {
             effect in authority.allowedEffects &&
             // (1) the profile ceiling: READONLY hosts no effect past reading.
             !(profile == AcpTaskProfile.READONLY && effect != AcpToolEffect.READ) &&
-            // (3) the human leg: fail-closed while the seam is absent — see the class doc.
+            // (3) the human leg: fail-closed, because an answer is not an authorization.
             effect !in authority.humanRequiredEffects
         if (!granted) {
             return RequestPermissionResponse(RequestPermissionOutcome.Cancelled)

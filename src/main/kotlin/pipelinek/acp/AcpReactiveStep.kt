@@ -30,6 +30,8 @@ import dev.rubentxu.pipeline.v2.domain.step.StepCodec
 import dev.rubentxu.pipeline.v2.domain.step.StepContract
 import dev.rubentxu.pipeline.v2.domain.step.StepDefinition
 import dev.rubentxu.pipeline.v2.domain.step.StepHandler
+import dev.rubentxu.pipeline.v2.runtime.input.INPUT_DECISIONS_CAPABILITY
+import dev.rubentxu.pipeline.v2.runtime.input.InputDecisions
 import java.nio.file.Path
 import kotlinx.serialization.json.Json
 
@@ -73,8 +75,9 @@ fun interface AcpReaction {
  * ## What the step does NOT do
  *
  * It never answers the agent in a person's name. The authority is null and the profile is
- * READONLY, so a permission request is refused at the protocol level; there is no published
- * seam that would let a plugin ask a human (see [AcpAuthority]).
+ * READONLY, so a permission request is refused at the protocol level. An elicitation is a
+ * different question — the agent asking for a person's input, not for a grant — and it is
+ * put to a person through the human-decision port (see [AcpHumanDecision]).
  */
 object AcpReactiveStepDefinition :
     StepDefinition<AcpPromptInput, AcpReactiveOutput>,
@@ -135,7 +138,13 @@ object AcpReactiveStepDefinition :
             // the published coherence check binds a HANDLER_CONTINUATION step to it: a body
             // whose owner is the handler and whose capability is missing is rejected before
             // any effect, and the check reads the DECLARATION, not what the handler reads.
-            requiredCapabilities = setOf(BODY_SLOT_CAPABILITY, BODY_CONTINUATION_CAPABILITY),
+            // The human-decision capability is declared because this step runs a reverse
+            // leg too: the agent may ask the client for a person's input while it reacts.
+            requiredCapabilities = setOf(
+                BODY_SLOT_CAPABILITY,
+                BODY_CONTINUATION_CAPABILITY,
+                INPUT_DECISIONS_CAPABILITY,
+            ),
         )
     }
 
@@ -145,10 +154,16 @@ object AcpReactiveStepDefinition :
         // The reverse leg denies every permission: the authority is null and the profile is
         // READONLY, so an agent that asks for a grant gets the protocol's refusal. The
         // reactive step reacts to what the agent says; it does not grant what the agent asks.
+        // An elicitation is not a grant: it is the agent asking for a person's input, and
+        // the port is how that question reaches a person.
+        val decisions: InputDecisions =
+            context.capabilities.get(INPUT_DECISIONS_CAPABILITY, InputDecisions::class)
         val reverse = AcpReverseSession(
             workspaceRoot = Path.of(input.cwd.ifEmpty { System.getProperty("user.dir") }),
             profile = AcpTaskProfile.READONLY,
             authority = null,
+            humanDecision = AcpHumanDecision(decisions),
+            budgetMillis = input.timeoutSeconds * 1000,
         )
         when (
             val exchange = AcpConnection(AcpPluginDeclaration.declaredVersion())
