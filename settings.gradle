@@ -1,0 +1,8 @@
+// The JDK guard is applied HERE, and not from build.gradle.kts, for a measured reason:
+// under a JDK the embedded Kotlin DSL compiler cannot parse, the build script itself
+// cannot be compiled — so a guard written in build.gradle.kts would never get to speak.
+// The settings script is evaluated first, and it is Groovy, which the daemon evaluates on
+// any JDK it can run at all. gradle/jdk-guard.gradle holds the guard and its reasons.
+apply(from: "gradle/jdk-guard.gradle")
+
+rootProject.name = "pipelinek-acp"
