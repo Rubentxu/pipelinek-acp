@@ -58,6 +58,12 @@ dependencies {
     // two-authorities split the published seam exists to prevent.
     compileOnly("dev.rubentxu.pipelinek:pipelinek-domain:$sdkVersion")
     compileOnly("dev.rubentxu.pipelinek:pipelinek-scripting-api:$sdkVersion")
+    // The port a plugin asks a PERSON through: the runtime binds it under
+    // INPUT_DECISIONS_CAPABILITY and the person answers it on the service socket. It is
+    // `compileOnly` like every other SDK contract — the host supplies it at runtime, and a
+    // plugin that bundled it would run beside a second copy of the very port the host
+    // admits it against.
+    compileOnly("dev.rubentxu.pipelinek:pipelinek-runtime-api:$sdkVersion")
 
     // The ACP client is private machinery of this plugin: nothing in a pipeline script
     // touches it, only the step handler does. It therefore belongs on the runtime
@@ -68,17 +74,22 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:$hostSerializationVersion")
     implementation("org.slf4j:slf4j-nop:2.0.16") // kotlin-logging needs A slf4j backend; NOP keeps the agent's stdout clean of log chatter.
 
+    // The emitter reads the step contracts, and a contract that names the human-decision
+    // capability names a class of the runtime API: the emitter runs against the same
+    // contracts the plugin compiles against, or it could not emit a manifest at all.
     add("sdkForManifestEmission", "dev.rubentxu.pipelinek:pipelinek-domain:$sdkVersion")
+    add("sdkForManifestEmission", "dev.rubentxu.pipelinek:pipelinek-runtime-api:$sdkVersion")
 
     // The contract tests CHECK the engine instead of only compiling against it; a test is
     // not shipped, so putting the contracts on the test classpath costs nothing.
     testImplementation("dev.rubentxu.pipelinek:pipelinek-domain:$sdkVersion")
     testImplementation("dev.rubentxu.pipelinek:pipelinek-scripting-api:$sdkVersion")
-    // These two are on the TEST classpath only, and only to MEASURE the published surface:
-    // the laws assert what the bundle carries (the service client that answers a question,
-    // the recovery ports) and what it does NOT carry (the human-interaction port, the
-    // durable substrate, the normative replay table). The shipped plugin depends on neither:
-    // a plugin that could reach those ports would not need to measure their absence.
+    // The runtime API is on the TEST classpath because the shipped plugin compiles against
+    // it: the laws exercise the very port the plugin asks through. The service client is
+    // here to MEASURE the published surface (the client that answers a question a run
+    // published); the shipped plugin does not depend on it — a plugin that could reach the
+    // answering client directly would open the second way of asking that the port exists
+    // to close.
     testImplementation("dev.rubentxu.pipelinek:pipelinek-runtime-api:$sdkVersion")
     testImplementation("dev.rubentxu.pipelinek:pipelinek-service-client:$sdkVersion")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:$hostCoroutinesVersion")
