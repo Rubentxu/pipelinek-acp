@@ -13,7 +13,17 @@ import com.agentclientprotocol.model.PermissionOptionKind
 import com.agentclientprotocol.model.RequestPermissionOutcome
 import com.agentclientprotocol.model.SessionId
 import com.agentclientprotocol.model.ToolKind
+import dev.rubentxu.pipeline.v2.domain.RunId
+import dev.rubentxu.pipeline.v2.domain.step.EXECUTION_LOCATION_CAPABILITY
 import dev.rubentxu.pipeline.v2.domain.step.PluginManifestValidator
+import dev.rubentxu.pipeline.v2.domain.step.RegistryStepInvoker
+import dev.rubentxu.pipeline.v2.domain.step.StepCapability
+import dev.rubentxu.pipeline.v2.domain.step.StepCapabilityAccess
+import dev.rubentxu.pipeline.v2.domain.step.StepHandlerContext
+import dev.rubentxu.pipeline.v2.domain.step.StepInvocationOutcome
+import dev.rubentxu.pipeline.v2.domain.step.StepRegistryBuilder
+import dev.rubentxu.pipeline.v2.domain.workspace.ExecutionLocation
+import dev.rubentxu.pipeline.v2.domain.workspace.WorkspaceLease
 import dev.rubentxu.pipeline.v2.runtime.input.INPUT_DECISIONS_CAPABILITY
 import dev.rubentxu.pipeline.v2.runtime.input.InputDecision
 import dev.rubentxu.pipeline.v2.runtime.input.InputDecisions
@@ -26,6 +36,7 @@ import dev.rubentxu.pipeline.v2.service.ServiceInputDecision
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.coroutines.Continuation
+import kotlin.reflect.KClass
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -256,6 +267,91 @@ class AcpHumanInteractionTest {
             unanswered.action,
             "a question nobody answered is cancelled, not answered in someone's name",
         )
+    }
+
+    @Test
+    fun `the published admission admits the step with the human-decision capability`() {
+        // The published seam the runtime invokes a plugin's step through: the registry, the
+        // capability admission and the handler, in that order. The admission is fail-closed,
+        // so it is the DECLARATION that decides whether the step runs at all.
+        val registry = StepRegistryBuilder().addAll(AcpContributor().registrations()).build()
+        val invoker = RegistryStepInvoker(registry)
+        val root = Files.createTempDirectory("acp-admission-")
+        val encoded = AcpTaskStepDefinition.InputCodec.encode(
+            AcpTaskInput(command = listOf("/nonexistent/pipelinek-acp-agent"), prompt = "ask"),
+        )
+        val lease = ExecutionLocation(WorkspaceLease.Managed(root), root)
+
+        val bound = RecordingAccess(
+            mapOf(
+                EXECUTION_LOCATION_CAPABILITY to lease,
+                INPUT_DECISIONS_CAPABILITY to AcpUnansweredInputDecisions(),
+                // The host contributes the credential seam unconditionally; this delegation
+                // names no credential, so nothing reads it.
+                StepCapability("credentials.basic") to Any(),
+            ),
+        )
+        val admitted = runBlocking {
+            invoker.invoke<AcpTaskInput, AcpTaskOutput>(
+                AcpTaskStepDefinition.KEY,
+                encoded,
+                StepHandlerContext(RunId("run-admission"), 0, bound),
+            )
+        }
+        assertTrue(
+            admitted !is StepInvocationOutcome.MissingCapability,
+            "the step declares the capability and the runtime supplies it: $admitted",
+        )
+        assertTrue(
+            bound.asked.contains(INPUT_DECISIONS_CAPABILITY),
+            "the port reaches the handler through the key the step declared: ${bound.asked}",
+        )
+
+        // The contrast: the admission is fail-closed, and what it reads is the DECLARATION.
+        // Without the port the step does not run at all, and the refusal names the very
+        // capability the plugin declared.
+        val unbound = RecordingAccess(
+            mapOf(
+                EXECUTION_LOCATION_CAPABILITY to lease,
+                StepCapability("credentials.basic") to Any(),
+            ),
+        )
+        val refused = runBlocking {
+            invoker.invoke<AcpTaskInput, AcpTaskOutput>(
+                AcpTaskStepDefinition.KEY,
+                encoded,
+                StepHandlerContext(RunId("run-admission"), 0, unbound),
+            )
+        }
+        assertTrue(
+            refused is StepInvocationOutcome.MissingCapability &&
+                refused.missing.contains(INPUT_DECISIONS_CAPABILITY),
+            "a step that declares a capability the runtime does not supply is refused: $refused",
+        )
+        assertTrue(
+            unbound.asked.isEmpty(),
+            "the handler never runs when the admission refuses: ${unbound.asked}",
+        )
+    }
+
+    /**
+     * The capability table, watched: it records what the handler asked for, so a law can
+     * say that the port arrived instead of inferring it.
+     */
+    private class RecordingAccess(
+        private val values: Map<StepCapability, Any>,
+    ) : StepCapabilityAccess {
+        val asked = mutableListOf<StepCapability>()
+
+        override fun available(): Set<StepCapability> = values.keys
+
+        @Suppress("UNCHECKED_CAST")
+        override fun <T : Any> get(key: StepCapability, type: KClass<T>): T {
+            asked += key
+            val value = values[key] ?: error("capability '$key' is not bound")
+            require(type.isInstance(value)) { "capability '$key' does not carry a ${type.simpleName}" }
+            return value as T
+        }
     }
 
     /**

@@ -6,10 +6,10 @@ import dev.rubentxu.pipeline.v2.domain.step.CapabilityRefusedException
 import dev.rubentxu.pipeline.v2.domain.step.EXECUTION_LOCATION_CAPABILITY
 import dev.rubentxu.pipeline.v2.domain.step.StepCapability
 import dev.rubentxu.pipeline.v2.domain.step.StepCapabilityAccess
-import dev.rubentxu.pipeline.v2.runtime.input.INPUT_DECISIONS_CAPABILITY
 import dev.rubentxu.pipeline.v2.domain.step.StepHandlerContext
 import dev.rubentxu.pipeline.v2.domain.workspace.ExecutionLocation
 import dev.rubentxu.pipeline.v2.domain.workspace.WorkspaceLease
+import dev.rubentxu.pipeline.v2.runtime.input.INPUT_DECISIONS_CAPABILITY
 import java.nio.file.Path
 import kotlin.reflect.KClass
 import kotlinx.coroutines.runBlocking
