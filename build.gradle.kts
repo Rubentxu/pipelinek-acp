@@ -98,7 +98,10 @@ dependencies {
 }
 
 kotlin {
-    jvmToolchain(21)
+    // The declared JDK lives in gradle.properties, not here: the build's own JDK guard
+    // (gradle/jdk-guard.gradle) runs before this script can be compiled, and both read the
+    // SAME property, so the answer is written once and read twice.
+    jvmToolchain(providers.gradleProperty("pipelinek.acp.jvmToolchain").get().toInt())
 }
 
 tasks.test {
@@ -107,6 +110,13 @@ tasks.test {
     // is only a FINALIZER of processResources, and a finalizer runs after its task's
     // dependents — i.e. after the test that reads it.
     dependsOn(computeAcpRelease)
+    // The JDK guard's test runs a NESTED build of this repository's own entry points, so it
+    // needs to know where the repository is: the test JVM's working directory is not a
+    // contract.
+    systemProperty("acp.projectDir", projectDir.absolutePath)
+    // The files that nested build reads are INPUTS of this test: without this edge a change
+    // to the guard leaves the test UP-TO-DATE, and the guard would go unmeasured.
+    inputs.files("settings.gradle", "gradle.properties", "gradle")
     testLogging {
         events("failed", "skipped")
         exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL

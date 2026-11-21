@@ -1,0 +1,117 @@
+// =============================================================================
+// The JDK guard: this build compiles with the JDK it declares, or it refuses.
+// =============================================================================
+//
+// WHY A GUARD EXISTS AT ALL. `kotlin { jvmToolchain(21) }` says WHICH bytecode the plugin
+// targets; it does not say WHICH JDK compiles it. The Kotlin compiler runs inside the
+// Gradle daemon, so the daemon's JVM is the JDK that compiles this project. A daemon on a
+// JDK the compiler cannot parse dies with a message that says nothing:
+//
+//     * What went wrong:
+//     25.0.4.1
+//
+// That is the whole error. Whoever reads it cannot tell what is wrong, nor what to do —
+// so the build refuses HERE, before the compiler, with a message that names the JDK it
+// expects, the JDK it found, and the path that fixes it.
+//
+// WHY IT LIVES HERE, IN A GROOVY SETTINGS SCRIPT. The failure above happens while Gradle
+// COMPILES the Kotlin DSL build script: the embedded Kotlin compiler cannot parse JDK 25
+// either. A guard written in build.gradle.kts would never get to speak — the script that
+// holds it is the thing that dies. The settings script is evaluated first, and it is
+// Groovy, which the daemon evaluates on any JDK it can run at all.
+//
+// WHERE THE EXPECTED JDK COMES FROM. `pipelinek.acp.jvmToolchain` in gradle.properties,
+// which the build script reads for its toolchain too: one answer, read twice, never
+// written twice.
+//
+// WHAT IT DOES WHEN THE JDK IS WRONG. It refuses the build with a message carrying the
+// three things a reader needs: the JDK it expects, the JDK it found, and the exact path
+// to point JAVA_HOME at.
+
+def declaredProperty = "pipelinek.acp.jvmToolchain"
+
+def declared = providers.gradleProperty(declaredProperty).getOrNull()
+if (declared == null) {
+    throw new GradleException(
+        "`${declaredProperty}` is not set in gradle.properties, so this build cannot say " +
+            "which JDK it compiles with. The guard and the toolchain read the same property: " +
+            "without it, neither of them can answer."
+    )
+}
+def expectedMajor = declared.toInteger()
+
+// The JVM the daemon runs on. The Kotlin compiler runs inside it, so this is the JDK that
+// compiles the project, whatever the toolchain says.
+def daemonVersion = System.getProperty("java.version")
+def daemonMajor = daemonVersion.startsWith("1.")
+    ? daemonVersion.split("\\.")[1].toInteger()
+    : daemonVersion.split(/[.\-_]/)[0].toInteger()
+
+if (daemonMajor == expectedMajor) {
+    return
+}
+
+// A JDK of the expected major, found on THIS machine: the refusal has to name a PATH, not
+// "install Java". The roots are the ones the common version managers and the systems use;
+// no path is written in this tree, because a path written here names the house of whoever
+// wrote it and stops working on the next machine.
+def findJdkHome = { int major ->
+    def roots = [
+        "${System.getProperty('user.home')}/.asdf/installs/java",
+        "${System.getProperty('user.home')}/.sdkman/candidates/java",
+        "/usr/lib/jvm",
+        "/Library/Java/JavaVirtualMachines",
+    ]
+    for (def root : roots) {
+        def directory = new File(root)
+        if (!directory.isDirectory()) {
+            continue
+        }
+        for (def installation : directory.listFiles() ?: []) {
+            if (!installation.isDirectory()) {
+                continue
+            }
+            // macOS bundles the JDK under Contents/Home.
+            def home = new File(installation, "Contents/Home")
+            if (!home.isDirectory()) {
+                home = installation
+            }
+            if (!new File(home, "bin/java").canExecute()) {
+                continue
+            }
+            def release = new File(home, "release")
+            if (!release.isFile()) {
+                continue
+            }
+            def matcher = release.getText("UTF-8") =~ /JAVA_VERSION="?(\d+)/
+            if (matcher.find() && matcher.group(1).toInteger() == major) {
+                return home.absolutePath
+            }
+        }
+    }
+    return null
+}
+
+def expectedHome = findJdkHome(expectedMajor)
+def fix = expectedHome != null
+    ? "    JAVA_HOME=${expectedHome} ./gradlew build"
+    : "    JAVA_HOME=<path to a JDK ${expectedMajor} installation> ./gradlew build"
+
+def howToGetOne = expectedHome != null
+    ? ""
+    : "\nNo JDK ${expectedMajor} installation was found on this machine. Install one with the\n" +
+        "version manager you use, and point the build at it.\n"
+
+throw new GradleException(
+    "The Gradle daemon runs on JDK ${daemonVersion}, but this project compiles with JDK ${expectedMajor}\n" +
+        "(declared by `${declaredProperty}` in gradle.properties, applied as `kotlin { jvmToolchain(${expectedMajor}) }`).\n" +
+        "\n" +
+        "Kotlin compiles inside the Gradle daemon, so the toolchain does not change the JDK that\n" +
+        "compiles this project: the daemon's JDK is the one that matters. Left alone, the build dies\n" +
+        "inside the compiler with a bare `${daemonVersion}` and nothing a reader can act on.\n" +
+        "\n" +
+        "Point the build at a JDK ${expectedMajor} installation and build again:\n" +
+        "\n" +
+        "${fix}\n" +
+        howToGetOne
+)
