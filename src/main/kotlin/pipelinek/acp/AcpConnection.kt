@@ -55,7 +55,11 @@ class AcpConnection(private val pluginVersion: String) {
     fun run(input: AcpPromptInput): AcpExchange = runBlocking { exchange(input) }
 
     /** The step handler's entry point; suspend so the process I/O never parks an engine thread. */
-    suspend fun exchange(input: AcpPromptInput): AcpExchange {
+    suspend fun exchange(
+        input: AcpPromptInput,
+        reverse: AcpReverseSession? = null,
+        reaction: AcpReaction? = null,
+    ): AcpExchange {
         val process = try {
             AcpAgentProcess.open(input.command)
         } catch (e: AgentLaunchFailed) {
@@ -71,7 +75,8 @@ class AcpConnection(private val pluginVersion: String) {
                     process = process,
                     scope = scope,
                     cancelOnUnwind = false,
-                    reverse = null,
+                    reverse = reverse,
+                    reaction = reaction,
                 )
             }
         } catch (e: TimeoutCancellationException) {
@@ -210,7 +215,8 @@ class AcpConnection(private val pluginVersion: String) {
      * announces the capability intersection it can actually keep, and its pending permission
      * requests are resolved to Cancelled BEFORE session/cancel is said — the agent resolves
      * its own open request instead of hanging until the reap. The prompt path passes null
-     * and keeps PKH-132's deny-everything behaviour verbatim.
+     * and keeps PKH-132's deny-everything behaviour verbatim; the reactive path passes a
+     * session whose only extra duty is to hand the agent's updates to the reaction hook.
      */
     private suspend fun runExchange(
         prompt: String,
@@ -219,6 +225,7 @@ class AcpConnection(private val pluginVersion: String) {
         scope: CoroutineScope,
         cancelOnUnwind: Boolean,
         reverse: AcpReverseSession?,
+        reaction: AcpReaction? = null,
     ): AcpExchange {
         val transport = StdioTransport(
             parentScope = scope,
@@ -249,7 +256,7 @@ class AcpConnection(private val pluginVersion: String) {
             val reply = StringBuilder()
             var stopReason = ""
             try {
-                promptInto(session, prompt, reply) { stopReason = it }
+                promptInto(session, prompt, reply, reaction) { stopReason = it }
             } catch (e: CancellationException) {
                 if (cancelOnUnwind) {
                     // AC#1's last clause: the open permission requests get their Cancelled
@@ -278,19 +285,29 @@ class AcpConnection(private val pluginVersion: String) {
         }
     }
 
-    /** One prompt turn: text chunks accumulate in [reply], the terminal event sets [onStop]. */
+    /**
+     * One prompt turn: text chunks accumulate in [reply], the terminal event sets [onStop].
+     *
+     * [reaction] is the reactive client's hook: the SDK routes the updates an agent sends
+     * DURING a prompt to the prompt's own stream — not to the session operations, which only
+     * see the updates that arrive with no prompt in flight — so the stream is the one place
+     * where the turn's events can be reacted to as they happen.
+     */
     private suspend fun promptInto(
         session: ClientSession,
         prompt: String,
         reply: StringBuilder,
+        reaction: AcpReaction?,
         onStop: (String) -> Unit,
     ) {
         session.prompt(listOf(ContentBlock.Text(text = prompt))).collect { event ->
             when (event) {
-                is Event.SessionUpdateEvent ->
+                is Event.SessionUpdateEvent -> {
+                    reaction?.react(event.update)
                     (event.update as? SessionUpdate.AgentMessageChunk)?.let { chunk ->
                         (chunk.content as? ContentBlock.Text)?.let { reply.append(it.text) }
                     }
+                }
                 is Event.PromptResponseEvent -> onStop(event.response.stopReason.name)
             }
         }

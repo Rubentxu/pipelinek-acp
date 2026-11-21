@@ -74,6 +74,13 @@ dependencies {
     // not shipped, so putting the contracts on the test classpath costs nothing.
     testImplementation("dev.rubentxu.pipelinek:pipelinek-domain:$sdkVersion")
     testImplementation("dev.rubentxu.pipelinek:pipelinek-scripting-api:$sdkVersion")
+    // These two are on the TEST classpath only, and only to MEASURE the published surface:
+    // the laws assert what the bundle carries (the service client that answers a question,
+    // the recovery ports) and what it does NOT carry (the human-interaction port, the
+    // durable substrate, the normative replay table). The shipped plugin depends on neither:
+    // a plugin that could reach those ports would not need to measure their absence.
+    testImplementation("dev.rubentxu.pipelinek:pipelinek-runtime-api:$sdkVersion")
+    testImplementation("dev.rubentxu.pipelinek:pipelinek-service-client:$sdkVersion")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:$hostCoroutinesVersion")
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.11.4")
