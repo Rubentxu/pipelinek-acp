@@ -3,3 +3,6 @@ build/
 .kotlin/
 .claude/
 task-sessions.counter
+# The worktrees of this repository live inside it: a branch is worked on away from
+# the main tree, and the checkout must not look like untracked content to it.
+.worktrees/
