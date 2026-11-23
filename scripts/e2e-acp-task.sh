@@ -12,7 +12,11 @@
 #   3. (PKH-136) an `observe` delegation whose agent streams every update shape plus
 #      canaries in the fields the whitelist must never read — the run's events table must
 #      carry the projected pipelinek.acp.* kinds and NO canary, proving the events reach
-#      the durable observability API through the published seam without leaking the wire.
+#      the durable observability API through the published seam without leaking the wire;
+#   4. (PKH-136) a `flood` delegation: a chunk avalanche cut short by the budget. Its output
+#      is the typed timeout refusal, and its events must carry the lifecycle facts the plugin
+#      establishes itself — started, cancelled, refused — proving the CONTROL lane holds its
+#      promise that lifecycle facts survive the avalanche.
 #
 # No network, no credentials: the agent is the in-repo python fixture over a pipe.
 set -eu
@@ -74,6 +78,20 @@ pipeline {
                 budgetSeconds = 60,
             )
         }
+        stage("delegate flooded then cancelled") {
+            // PKH-136 LIFECYCLE row: 1200 chunks bury the bounded lane and the agent never
+            // answers; the budget cancels. The control-lane facts of this exchange — started,
+            // cancelled, refused — must still reach the events table. The stage fails the
+            // exchange on purpose (typed timeout refusal), never the run.
+            acpTask(
+                command = listOf("python3", "-I",
+                    "src/test/resources/acp_task_fixture_agent.py", "flood"),
+                prompt = "delegate flood",
+                profile = AcpTaskProfile.READONLY,
+                cwd = ".",
+                budgetSeconds = 1,
+            )
+        }
     }
 }
 SCRIPT
@@ -127,13 +145,18 @@ def outputs(db):
 
 happy = [json.loads(r) for r in outputs(os.path.join(state, "run-task.sqlite"))]
 assert happy, "the durable journal carries no step output at all"
-assert len(happy) >= 2, "two task stages must leave two typed outputs, got %d" % len(happy)
-for answer in happy:
+assert len(happy) >= 4, "four task stages must leave four typed outputs, got %d" % len(happy)
+for answer in happy[:3]:
     assert answer.get("ok") is True, "the delegation was refused: %s %s" % (
         answer.get("failureKind"), answer.get("detail"))
     assert answer.get("outcome") == "COMPLETED", "unexpected outcome: %r" % answer.get("outcome")
     assert answer.get("stopReason") == "END_TURN", "unexpected stop: %r" % answer.get("stopReason")
-assert "task-ok" in happy[-1].get("reply", ""), "unexpected reply: %r" % happy[-1].get("reply")
+assert "task-ok" in happy[2].get("reply", ""), "unexpected observed reply: %r" % happy[2].get("reply")
+# The flooded delegation ends by budget: a typed refusal in the SAME durable journal.
+flood = happy[3]
+assert flood.get("ok") is False, "the flooding agent must not complete: %r" % flood
+assert flood.get("failureKind") == "ACP_AGENT_TIMEOUT", (
+    "the avalanche must end classified as a budget timeout, got %r" % flood.get("failureKind"))
 # Two delegations, one agent kind, shared counter: session/new ran twice — no parked session.
 counter = open(os.path.join(repo, "task-sessions.counter")).read().strip()
 assert counter == "2", "delegations must open one fresh session each, counter reads %r" % counter
@@ -165,6 +188,13 @@ expected = {
     "pipelinek.acp.tool_call_completed",
     "pipelinek.acp.plan",
     "pipelinek.acp.unknown_update",
+    # LIFECYCLE row (PKH-136): the facts the plugin establishes about its own exchanges.
+    # started/turn_ended come from the completed delegations; cancelled/refused from the
+    # flooded one the budget cut short — the CONTROL lane's promise under an avalanche.
+    "pipelinek.acp.exchange_started",
+    "pipelinek.acp.turn_ended",
+    "pipelinek.acp.exchange_cancelled",
+    "pipelinek.acp.exchange_refused",
 }
 missing = expected - kinds
 assert not missing, "the projection owes these kinds and none arrived: %s" % sorted(missing)
@@ -181,6 +211,7 @@ for banned in canaries + ["rawInput", "rawOutput", "_meta", "jsonrpc"]:
         "the events table leaked %r — the redaction whitelist did not hold" % banned)
 print("e2e observation evidence: %d plugin events, kinds %s" % (
     len(emitted), sorted(kinds)))
-print("e2e task evidence (happy):", happy[-1])
+print("e2e task evidence (happy):", happy[2])
+print("e2e task evidence (flood):", flood)
 print("e2e task evidence (escape):", refusal)
 PY
