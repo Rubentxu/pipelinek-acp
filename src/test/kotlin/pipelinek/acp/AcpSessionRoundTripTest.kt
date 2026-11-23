@@ -402,4 +402,154 @@ class AcpSessionRoundTripTest {
         assertTrue(out.ok, "own token must load, got ${out.failureKind}: ${out.detail}")
         assertEquals("mcp0:turn1|seen:after token load|kinds:text", out.turns.single().reply)
     }
+
+    // ---------------------------------------------------------------- PKH-141 AC#2: the
+    // management operations the pinned SDK negotiates (fork, auth/status, providers/list).
+
+    @Test
+    fun `fork opens a new session from the declared one, over the real wire`() {
+        val witness = Files.createTempFile("acp-session-fork", ".txt")
+        try {
+            val out = AcpSessionConnection("0.0.0-test").run(
+                input(
+                    fixture("full", witness.toString()),
+                    turns = listOf(acpTurn("child turn")),
+                    copy = { it.copy(forkSessionId = "session-src") },
+                ),
+            )
+            assertTrue(out.ok, "fork + turn must complete, got ${out.failureKind}: ${out.detail}")
+            assertTrue(out.openedByFork, "the output says which open dialed")
+            // The fork reached the agent under the declared id, and the child session starts
+            // with its OWN history: the fixture's turn counter says turn1, not turn2 (AC#2).
+            assertTrue(Files.readString(witness).contains("FORK session-src"),
+                "session/fork never arrived: ${Files.readString(witness)}")
+            assertEquals("mcp0:turn1|seen:child turn|kinds:text", out.turns.single().reply)
+            assertFalse(out.sessionRef.isBlank())
+        } finally {
+            Files.deleteIfExists(witness)
+        }
+    }
+
+    @Test
+    fun `a declared fork the agent never announced is refused before the session is asked`() {
+        val out = AcpSessionConnection("0.0.0-test").run(
+            input(
+                fixture("minimal"), turns = listOf(acpTurn("x")),
+                copy = { it.copy(forkSessionId = "session-src") },
+            ),
+        )
+        assertFalse(out.ok)
+        assertEquals("ACP_SESSION_CAPABILITY_MISSING", out.failureKind)
+        assertEquals("", out.sessionRef, "a gated fork launches no session")
+    }
+
+    @Test
+    fun `auth status and providers list ride the negotiated markers into typed output`() {
+        val out = AcpSessionConnection("0.0.0-test").run(
+            input(
+                fixture("full"), turns = listOf(acpTurn("hi")),
+                copy = { it.copy(authStatus = true, listProviders = true) },
+            ),
+        )
+        assertTrue(out.ok, "auth+providers must complete, got ${out.failureKind}: ${out.detail}")
+        assertTrue(out.authenticated, "the fixture answers authenticated")
+        assertEquals("fixture-operator", out.authMessage)
+        assertEquals(listOf("openrouter", "local-models"), out.providersListed)
+    }
+
+    @Test
+    fun `management reads the agent never announced are refused, each naming its gate`() {
+        val auth = AcpSessionConnection("0.0.0-test").run(
+            input(
+                fixture("minimal"), turns = listOf(acpTurn("x")),
+                copy = { it.copy(authStatus = true) },
+            ),
+        )
+        assertFalse(auth.ok)
+        assertEquals("ACP_SESSION_CAPABILITY_MISSING", auth.failureKind)
+
+        val providers = AcpSessionConnection("0.0.0-test").run(
+            input(
+                fixture("minimal"), turns = listOf(acpTurn("x")),
+                copy = { it.copy(listProviders = true) },
+            ),
+        )
+        assertFalse(providers.ok)
+        assertEquals("ACP_SESSION_CAPABILITY_MISSING", providers.failureKind)
+        assertEquals("", providers.sessionRef, "a gated read launches no session")
+    }
+
+    @Test
+    fun `two declared session opens are a config refusal before any launch`() {
+        // load+fork names two different histories to own at once: the plan cannot mean one
+        // exchange, and the answer arrives before the process does (AC#4's shape rule).
+        val out = AcpSessionConnection("0.0.0-test").run(
+            input(
+                fixture("full"), turns = listOf(acpTurn("x")),
+                copy = { it.copy(loadSessionId = "s1", forkSessionId = "s2") },
+            ),
+        )
+        assertFalse(out.ok)
+        assertEquals("ACP_CONFIG_INVALID", out.failureKind)
+        assertEquals("", out.sessionRef)
+    }
+
+    @Test
+    fun `a foreign fork token is refused before launch like load and resume`() {
+        val foreignToken = SessionRef.mint("some-other-connection", "session-src").value
+        val out = AcpSessionConnection("0.0.0-test").run(
+            input(
+                fixture("full"), turns = listOf(acpTurn("x")),
+                copy = { it.copy(forkSessionId = foreignToken) },
+            ),
+        )
+        assertFalse(out.ok)
+        assertEquals("ACP_FOREIGN_SESSION_REF", out.failureKind)
+        assertEquals("", out.sessionRef)
+    }
+
+    @Test
+    fun `a declared model reaches the agent as a set-model wire call`() {
+        // AC#2: the SDK pins a dedicated set_model method and the v1 session response carries a
+        // models block; the witness proves the declaration became a real wire call naming the
+        // model, and the typed output names it back — form, not an echo of a fixture string.
+        val witness = Files.createTempFile("acp-session-model", ".txt")
+        try {
+            val out = AcpSessionConnection("0.0.0-test").run(
+                input(
+                    fixture("full", witness.toString()), turns = listOf(acpTurn("x")),
+                    copy = { it.copy(modelId = "gpt-pro") },
+                ),
+            )
+            assertTrue(out.ok, "set_model must complete, got ${out.failureKind}: ${out.detail}")
+            assertEquals("gpt-pro", out.appliedModel)
+            assertTrue(Files.readString(witness).contains("MODEL gpt-pro"),
+                "the declared model must reach the agent over session/set_model")
+        } finally {
+            Files.deleteIfExists(witness)
+        }
+    }
+
+    @Test
+    fun `a model the session never offered is refused, naming its gate`() {
+        val unknown = AcpSessionConnection("0.0.0-test").run(
+            input(
+                fixture("full"), turns = listOf(acpTurn("x")),
+                copy = { it.copy(modelId = "no-such-model") },
+            ),
+        )
+        assertFalse(unknown.ok)
+        assertEquals("ACP_CONFIG_INVALID", unknown.failureKind)
+        assertTrue(unknown.detail.contains("no-such-model"),
+            "the refusal must name the model it could not place, got ${unknown.detail}")
+
+        val noModelsBlock = AcpSessionConnection("0.0.0-test").run(
+            input(
+                fixture("minimal"), turns = listOf(acpTurn("x")),
+                copy = { it.copy(modelId = "gpt-mini") },
+            ),
+        )
+        assertFalse(noModelsBlock.ok)
+        assertEquals("ACP_SESSION_CAPABILITY_MISSING", noModelsBlock.failureKind)
+    }
 }

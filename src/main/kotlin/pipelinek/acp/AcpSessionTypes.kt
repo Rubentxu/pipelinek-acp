@@ -33,12 +33,29 @@ data class AcpSessionInput(
     val mcpServers: List<AcpMcpInput> = emptyList(),
     /** a mode to set right after the session opens; empty means "say nothing about modes". */
     val modeId: String = "",
+    /**
+     * A model to select right after the session opens (PKH-141 AC#2), via the SDK's
+     * `session/set_model`. Empty means "say nothing about models". The agent must have put
+     * a `models` block in the session response — asking without it is a typed refusal.
+     */
+    val modelId: String = "",
     /** configuration options to set right after the session opens, in declaration order. */
     val configOptions: List<AcpConfigInput> = emptyList(),
     /** if set, the session is OPENED WITH `session/load` (historic updates separated, AC#3). */
     val loadSessionId: String = "",
     /** if set, the session is opened with `session/resume` instead of `session/new`. */
     val resumeSessionId: String = "",
+    /**
+     * If set, the session is opened with `session/fork` from that agent id (PKH-141 AC#2).
+     * The fork is EXPLICIT activation of an unstable-schema operation: it rides only when the
+     * plan declares it AND the agent announced `sessionCapabilities.fork`, and it opens a NEW
+     * session (the ref minted for it names the fork's child, never the source).
+     */
+    val forkSessionId: String = "",
+    /** ask `auth/status` once the negotiation held; gated by the agent's auth status flag. */
+    val authStatus: Boolean = false,
+    /** ask `providers/list` once the negotiation held; gated by the providers marker. */
+    val listProviders: Boolean = false,
     /** ask `session/list` once the session is open; the ids land in the typed output. */
     val listSessions: Boolean = false,
     /** end the connection with `logout` (gated by the negotiated auth capability). */
@@ -156,8 +173,18 @@ data class AcpSessionOutput(
     val historicEvents: List<String> = emptyList(),
     val sessionsListed: List<String> = emptyList(),
     val appliedMode: String = "",
+    /** the model `session/set_model` selected (only meaningful when the plan asked, AC#2). */
+    val appliedModel: String = "",
     val appliedConfig: List<String> = emptyList(),
     val logoutOk: Boolean = false,
+    /** the session was opened by forking [AcpSessionInput.forkSessionId] (AC#2). */
+    val openedByFork: Boolean = false,
+    /** `auth/status` answered `authenticated` (only meaningful when the plan asked). */
+    val authenticated: Boolean = false,
+    /** the agent's own words about the auth state; metadata, never a secret by shape. */
+    val authMessage: String = "",
+    /** the provider ids `providers/list` answered (only meaningful when the plan asked). */
+    val providersListed: List<String> = emptyList(),
     /** one of [AcpSessionOutcome.VOCABULARY], always set — ok=false with an empty outcome is a bug. */
     val outcome: String = "",
     /** one of [AcpRefusal.kindToken] when [ok] is false; empty when it is true. */
@@ -212,8 +239,13 @@ object AcpSessionOutcome {
         historicEvents: List<String> = emptyList(),
         sessionsListed: List<String> = emptyList(),
         appliedMode: String = "",
+        appliedModel: String = "",
         appliedConfig: List<String> = emptyList(),
         logoutOk: Boolean = false,
+        openedByFork: Boolean = false,
+        authenticated: Boolean = false,
+        authMessage: String = "",
+        providersListed: List<String> = emptyList(),
     ): AcpSessionOutput = when {
         refusal == null -> AcpSessionOutput(
             ok = true,
@@ -222,8 +254,13 @@ object AcpSessionOutcome {
             historicEvents = historicEvents,
             sessionsListed = sessionsListed,
             appliedMode = appliedMode,
+            appliedModel = appliedModel,
             appliedConfig = appliedConfig,
             logoutOk = logoutOk,
+            openedByFork = openedByFork,
+            authenticated = authenticated,
+            authMessage = authMessage,
+            providersListed = providersListed,
             outcome = COMPLETED,
         )
         else -> AcpSessionOutput(

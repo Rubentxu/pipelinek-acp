@@ -198,11 +198,7 @@ object AcpCoverageMatrix {
         ),
         AcpMethodRow(
             "session/set_model", AcpMethodDirection.AGENT_SIDE, AcpMethodKind.REQUEST,
-            AcpRowClassification.UNSUPPORTED,
-            reason = "the pinned SDK carries session.setModel(); the plugin declines a model field: " +
-                "the plan's knobs are modes and config options (PKH-135), agents that want the " +
-                "client to pick expose it AS a config option, and a second surface for the same " +
-                "knob is two authorities over one decision.",
+            AcpRowClassification.TESTED, evidence = "AcpSessionRoundTripTest",
         ),
         AcpMethodRow(
             "session/set_config_option", AcpMethodDirection.AGENT_SIDE, AcpMethodKind.REQUEST,

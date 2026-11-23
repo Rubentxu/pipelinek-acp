@@ -112,6 +112,19 @@ object AcpHandshake {
         if (needs.resume && agent.capabilities.sessionCapabilities?.resume == null) {
             return AcpRefusal.SessionCapabilityMissing("session resume")
         }
+        // PKH-141 AC#2: the management operations the pinned SDK negotiates, each on its own
+        // announced shape — fork is a marker object on sessionCapabilities, auth status a
+        // plain boolean on auth (NOT a marker: absence and `false` are the same answer only
+        // because both refuse; the check says `!= true`, not `== null`), providers a marker.
+        if (needs.fork && agent.capabilities.sessionCapabilities?.fork == null) {
+            return AcpRefusal.SessionCapabilityMissing("session fork")
+        }
+        if (needs.authStatus && agent.capabilities.auth?.status != true) {
+            return AcpRefusal.SessionCapabilityMissing("auth status")
+        }
+        if (needs.providers && agent.capabilities.providers == null) {
+            return AcpRefusal.SessionCapabilityMissing("providers")
+        }
         if (needs.list && agent.capabilities.sessionCapabilities?.list == null) {
             return AcpRefusal.SessionCapabilityMissing("session list")
         }

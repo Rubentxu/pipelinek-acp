@@ -10,8 +10,10 @@ import com.agentclientprotocol.model.PromptCapabilities
 import com.agentclientprotocol.model.SessionCapabilities
 import com.agentclientprotocol.model.SessionCloseCapabilities
 import com.agentclientprotocol.model.SessionDeleteCapabilities
+import com.agentclientprotocol.model.SessionForkCapabilities
 import com.agentclientprotocol.model.SessionListCapabilities
 import com.agentclientprotocol.model.SessionResumeCapabilities
+import com.agentclientprotocol.model.ProvidersCapabilities
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
@@ -37,8 +39,10 @@ class AcpSessionHandshakeTest {
             resume = SessionResumeCapabilities(),
             delete = SessionDeleteCapabilities(),
             close = SessionCloseCapabilities(),
+            fork = SessionForkCapabilities(),
         ),
-        auth = AgentAuthCapabilities(logout = LogoutCapabilities()),
+        auth = AgentAuthCapabilities(logout = LogoutCapabilities(), status = true),
+        providers = ProvidersCapabilities(),
     )
 
     private val minimalCaps = AgentCapabilities(
@@ -59,6 +63,7 @@ class AcpSessionHandshakeTest {
         val needs = AcpSessionNeeds(
             image = true, audio = true, embeddedContext = true, mcpHttp = true, mcpSse = true,
             load = true, resume = true, list = true, delete = true, logout = true,
+            fork = true, authStatus = true, providers = true,
         )
         assertNull(AcpHandshake.sessionRefusal(agent(fullCaps), needs))
     }
@@ -87,11 +92,39 @@ class AcpSessionHandshakeTest {
             "session list" to AcpSessionNeeds(list = true),
             "session delete" to AcpSessionNeeds(delete = true),
             "auth logout" to AcpSessionNeeds(logout = true),
+            // PKH-141 AC#2: fork is a marker of the same shape; auth status and providers
+            // have their own gates below because their shapes differ (boolean, marker).
+            "session fork" to AcpSessionNeeds(fork = true),
         )) {
             val refusal = AcpHandshake.sessionRefusal(agent(minimalCaps), needs)
             assertEquals("ACP_SESSION_CAPABILITY_MISSING", refusal?.kindToken, name)
             assertEquals(name, (refusal as AcpRefusal.SessionCapabilityMissing).capability)
         }
+    }
+
+    @Test
+    fun `auth status is gated by the boolean flag, providers by the marker`() {
+        // The two PKH-141 operations whose announcements are NOT shaped alike: auth.status is
+        // a plain boolean (a false there means "do not ask me"), providers is a marker object
+        // on the root capabilities. Both refuse with the named negotiation.
+        val status = AcpHandshake.sessionRefusal(agent(minimalCaps), AcpSessionNeeds(authStatus = true))
+        assertEquals("ACP_SESSION_CAPABILITY_MISSING", status?.kindToken)
+        assertEquals("auth status", (status as AcpRefusal.SessionCapabilityMissing).capability)
+
+        val providers = AcpHandshake.sessionRefusal(agent(minimalCaps), AcpSessionNeeds(providers = true))
+        assertEquals("ACP_SESSION_CAPABILITY_MISSING", providers?.kindToken)
+        assertEquals("providers", (providers as AcpRefusal.SessionCapabilityMissing).capability)
+
+        // A false auth.status is a refusal even where the auth marker EXISTS (logout announced):
+        // the flag negotiates the operation, not the section.
+        val falseStatus = AgentCapabilities(
+            loadSession = false,
+            auth = AgentAuthCapabilities(logout = LogoutCapabilities(), status = false),
+        )
+        val refusal = AcpHandshake.sessionRefusal(
+            agent(falseStatus), AcpSessionNeeds(authStatus = true),
+        )
+        assertEquals("auth status", (refusal as AcpRefusal.SessionCapabilityMissing).capability)
     }
 
     @Test

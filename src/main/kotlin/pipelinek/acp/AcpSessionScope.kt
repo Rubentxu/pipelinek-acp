@@ -11,6 +11,7 @@ import com.agentclientprotocol.model.ContentBlock
 import com.agentclientprotocol.model.EmbeddedResourceResource
 import com.agentclientprotocol.model.HttpHeader
 import com.agentclientprotocol.model.McpServer
+import com.agentclientprotocol.model.ModelId
 import com.agentclientprotocol.model.PermissionOption
 import com.agentclientprotocol.model.RequestPermissionOutcome
 import com.agentclientprotocol.model.RequestPermissionResponse
@@ -139,9 +140,12 @@ data class AcpSessionNeeds(
     val mcpSse: Boolean = false,
     val load: Boolean = false,
     val resume: Boolean = false,
+    val fork: Boolean = false,
     val list: Boolean = false,
     val delete: Boolean = false,
     val logout: Boolean = false,
+    val authStatus: Boolean = false,
+    val providers: Boolean = false,
 )
 
 /**
@@ -203,23 +207,41 @@ class AcpSessionConnection(private val pluginVersion: String) {
             observation?.exchangeRefused(refusal.kindToken)
             return AcpSessionOutcome.toOutput(refusal = refusal)
         }
-        // AC#4's foreign-ref gate, BEFORE anything is launched: a declared load/resume id is
+        // AC#4's foreign-ref gate, BEFORE anything is launched: a declared load/resume/fork id is
         // resolved against THIS connection — a plain agent id rides unchanged, a token this
         // connection minted resolves to the agent id it carries, and a token another
         // connection minted is refused typed. Sending it anyway would hand a persisting agent
         // a second, unaccounted holder of one session's state.
         val loadResolution = SessionRef.resolve(input.loadSessionId, connectionNonce)
         val resumeResolution = SessionRef.resolve(input.resumeSessionId, connectionNonce)
-        val foreign = (listOf(loadResolution, resumeResolution)
+        val forkResolution = SessionRef.resolve(input.forkSessionId, connectionNonce)
+        val foreign = (listOf(loadResolution, resumeResolution, forkResolution)
             .filterIsInstance<SessionIdResolution.Foreign>()).firstOrNull()
         if (foreign != null) {
             val refusal = AcpRefusal.ForeignSessionRef(foreign.declared)
             observation?.exchangeRefused(refusal.kindToken)
             return AcpSessionOutcome.toOutput(refusal = refusal)
         }
+        // One session opens ONE way. Declaring two open-s is not "fork after load": it is a
+        // plan whose intent cannot be named, and the answer is config-shaped, before any
+        // process is launched (AC#4's incompatible-declaration rule, PKH-141's fork joins the
+        // load/resume pair).
+        val openDeclarations = listOf(
+            input.loadSessionId.isNotBlank(),
+            input.resumeSessionId.isNotBlank(),
+            input.forkSessionId.isNotBlank(),
+        ).count { it }
+        if (openDeclarations > 1) {
+            val refusal = AcpRefusal.ConfigInvalid(
+                "a session opens one way: load, resume and fork are declared together",
+            )
+            observation?.exchangeRefused(refusal.kindToken)
+            return AcpSessionOutcome.toOutput(refusal = refusal)
+        }
         val wireInput = input.copy(
             loadSessionId = wireIdOf(loadResolution, input.loadSessionId),
             resumeSessionId = wireIdOf(resumeResolution, input.resumeSessionId),
+            forkSessionId = wireIdOf(forkResolution, input.forkSessionId),
         )
         if (!inFlight.compareAndSet(false, true)) {
             val refusal = AcpRefusal.ActivePromptInProgress(
@@ -338,6 +360,28 @@ class AcpSessionConnection(private val pluginVersion: String) {
                 throw SessionOperationSignal(name, "${e.message} (code ${e.code})")
             }
 
+            // AC#2 of PKH-141: the connection-level management reads. Both are gated by
+            // sessionRefusal on the agent's own announcement (auth.status boolean, providers
+            // marker), so by here the agent has said it answers them. They ride at the
+            // connection level — no session is needed to ask who is authenticated or which
+            // providers exist — and a wire failure lands in the same named-operation refusal
+            // the session operations get.
+            var authenticated = false
+            var authMessage = ""
+            if (input.authStatus) {
+                sessionOp("auth/status") {
+                    val status = client.authStatus()
+                    authenticated = status.authenticated
+                    authMessage = status.message ?: ""
+                }
+            }
+            var providersListed = emptyList<String>()
+            if (input.listProviders) {
+                providersListed = sessionOp("providers/list") {
+                    client.listProviders().providers.map { it.id }
+                }
+            }
+
             val session: ClientSession = if (input.loadSessionId.isNotBlank()) {
                 val history = mutableListOf<String>()
                 historicSink.set(history)
@@ -357,6 +401,18 @@ class AcpSessionConnection(private val pluginVersion: String) {
                 sessionOp("session/resume") {
                     client.resumeSession(
                         sessionId = SessionId(input.resumeSessionId),
+                        sessionParameters = parameters,
+                        operationsFactory = operationsFactory,
+                    )
+                }
+            } else if (input.forkSessionId.isNotBlank()) {
+                // PKH-141 AC#2: the fork opens a NEW session whose history starts as a copy
+                // of the source's. The id is already resolved against this connection (a
+                // foreign token was refused before launch), so what the agent mints for the
+                // fork is the session this exchange owns; the source keeps its own holder.
+                sessionOp("session/fork") {
+                    client.forkSession(
+                        sessionId = SessionId(input.forkSessionId),
                         sessionParameters = parameters,
                         operationsFactory = operationsFactory,
                     )
@@ -400,6 +456,24 @@ class AcpSessionConnection(private val pluginVersion: String) {
                     )
                 }
                 session.setMode(SessionModeId(input.modeId))
+            }
+            // PKH-141 AC#2: the model rides the SDK's dedicated `session/set_model` method.
+            // Its negotiation carrier is the `models` block of the session response — a model
+            // ask against a session that never named its models is a typed refusal, not a
+            // wire error the plan has to decode.
+            if (input.modelId.isNotBlank()) {
+                if (!session.modelsSupported) {
+                    return refused(AcpRefusal.SessionCapabilityMissing("models"))
+                }
+                val knownModel = session.availableModels.any { it.modelId.value == input.modelId }
+                if (!knownModel) {
+                    return refused(
+                        AcpRefusal.ConfigInvalid(
+                            "model '${input.modelId}' is not among the models this session offers",
+                        ),
+                    )
+                }
+                session.setModel(ModelId(input.modelId))
             }
             val appliedConfig = mutableListOf<String>()
             for (config in input.configOptions) {
@@ -509,8 +583,13 @@ class AcpSessionConnection(private val pluginVersion: String) {
                 historicEvents = historic,
                 sessionsListed = listed.toList(),
                 appliedMode = input.modeId,
+                appliedModel = input.modelId,
                 appliedConfig = appliedConfig.toList(),
                 logoutOk = logoutOk,
+                openedByFork = input.forkSessionId.isNotBlank(),
+                authenticated = authenticated,
+                authMessage = authMessage,
+                providersListed = providersListed,
             )
         } finally {
             protocol.close()
@@ -528,9 +607,12 @@ class AcpSessionConnection(private val pluginVersion: String) {
             mcpSse = input.mcpServers.any { it.transport == "sse" },
             load = input.loadSessionId.isNotBlank(),
             resume = input.resumeSessionId.isNotBlank(),
+            fork = input.forkSessionId.isNotBlank(),
             list = input.listSessions,
             delete = input.deleteOnExit,
             logout = input.logout,
+            authStatus = input.authStatus,
+            providers = input.listProviders,
         )
     }
 
