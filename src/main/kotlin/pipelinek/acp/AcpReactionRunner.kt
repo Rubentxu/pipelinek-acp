@@ -11,9 +11,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Executes a compiled reaction plan: routes each observed update to the slots its selector
@@ -160,6 +162,44 @@ class AcpReactionRunner(
         return confirmed + redispatched
     }
 
+    /**
+     * Wait until an OBSERVED update matches [condition], giving up after [timeoutMillis].
+     *
+     * Await reads the observed stream, not the dispatched one: an event the reader received is
+     * visible even while the control loop is parked inside an earlier body — which is what lets
+     * a reaction await a later event without deadlocking against its own queue.
+     *
+     * The no-gap argument: each round scans and takes the cursor INSIDE one lock section, so a
+     * null answer means "nothing in (scanned, cursorSeen] matched" as a single fact. The
+     * subscription is only armed for values BEYOND cursorSeen, and a StateFlow re-delivers its
+     * current value — so an event that lands after the scan but before the subscription is
+     * either already covered by the scan's cursor or delivered on subscribe; there is no window
+     * that belongs to neither. The budget is real: [timeoutMillis] must be positive, and at its
+     * expiry the verdict is [AcpAwaitVerdict.TimedOut], never an infinite wait.
+     */
+    suspend fun await(condition: AcpEventSelector, timeoutMillis: Long): AcpAwaitVerdict {
+        require(timeoutMillis > 0) {
+            "await budget must be positive, got $timeoutMillis — an await that cannot time out is an unbounded wait"
+        }
+        val withinBudget = withTimeoutOrNull<AcpAwaitVerdict>(timeoutMillis) {
+            var scanned = 0L
+            var verdict: AcpAwaitVerdict? = null
+            while (verdict == null) {
+                val (cursorSeen, match) = state.withLock {
+                    cursor to observations.firstOrNull { it.cursor > scanned && condition.matches(it.update) }?.cursor
+                }
+                if (match != null) {
+                    verdict = AcpAwaitVerdict.Satisfied(match)
+                } else {
+                    scanned = maxOf(scanned, cursorSeen)
+                    lastObserved.first { it > scanned }
+                }
+            }
+            verdict
+        }
+        return withinBudget ?: AcpAwaitVerdict.TimedOut
+    }
+
     private suspend fun dispatchObserved(observed: Observed) {
         for (reaction in plan) {
             if (!reaction.selector.matches(observed.update)) continue
@@ -214,3 +254,17 @@ data class AcpSkippedReaction(
     val reactionId: String,
     val eventCursor: Long,
 )
+
+/**
+ * The verdict of [AcpReactionRunner.await]: an event matched within budget, or the budget ran
+ * out. Typed data, never an exception — a turn that awaited and did not get its event is a
+ * legitimate outcome the durable output has to carry, not a crash.
+ */
+sealed class AcpAwaitVerdict {
+
+    /** Some observed update matched, at runner cursor [eventCursor]. */
+    data class Satisfied(val eventCursor: Long) : AcpAwaitVerdict()
+
+    /** No matching update arrived within the declared budget. */
+    data object TimedOut : AcpAwaitVerdict()
+}
