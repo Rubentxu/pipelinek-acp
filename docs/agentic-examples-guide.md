@@ -74,6 +74,7 @@ Con `pipelinek` 0.99.0 (host del SDK publicado 0.99.0 del bundle), JDK 21:
 | `scripts/run-examples.sh` (los 4 ejemplos, journal durable) | PASS | `ac1-0[1-4]-*.json` y `ac1-0[1-4]-run.log` en el recibo |
 | `scripts/verify-distributed-artifact.sh` | PASS: manifest del jar identico al emitido; apiRange [0.99.0, 0.100.0) admite el host; firma manifest==release-properties; el CLI distribuido admitio el jar y ejecuto `acpPrompt` | `ac2-distributed-artifact.log`, `ac2-run.log` |
 | `scripts/e2e-socket-observe.sh` | PASS parcial honesto: `version`/`health`/`run.state`/`inputs.list`/`events.follow`/`output.follow` respondieron sobre el run del ejemplo con el plugin cargado (los eventos llevan `pipelinek.acp.exchange_started`, `turn_ended`, chunks); el `run.state` final devolvio `terminal/succeeded`; el CANCEL por el socket de un run EXTERNO vivo se nego con `the-lease-is-held-by-another` (proteccion del dueno del lease) y el de un run SUPERVISADO por el servicio (`run.start` → `run.cancel`) devolvio `outcome: cancelled` | `ac3-socket.log` |
+| `examples/hodei-verify/verify.sh` (contrato del orquestador externo, AC#4) | PASS dos filas: candidato verde `VERIFIED` con `agentTurns == 0` (verify-FIRST nunca despierta al agente) y candidato rojo `ok=false` con outcome tipado `DENIED` aunque el agente afirme lo contrario; la evidencia leida del journal en solo-lectura | `ac4-hodei-verify.log`, `build/examples/hodei-evidence/` |
 | Adaptadores reales (claude-agent-acp / Gemini) | NOT_RUN — opt-in por diseño (`PKH141_ACP_ADAPTER_*`); sin configurarse no afirman nada | README raiz, `AcpRealAdapterProbeTest` |
 
 ## Limites y gaps conocidos (medidos, no inferidos)
@@ -87,9 +88,13 @@ Con `pipelinek` 0.99.0 (host del SDK publicado 0.99.0 del bundle), JDK 21:
    (`the-lease-is-held-by-another`): la cancelacion por el socket funciona sobre
    los runs que el propio servicio supervisa. Quien necesite cancelar un run de
    plugin por el socket debe lanzarlo via `run.start`… lo que choca con (1).
-3. **Hodei**: no existe `hodei-meta-harness` en el workspace de esta maquina ni
-   contrato invocable alcanzable sin tocar un repo ajeno → AC#4 `NOT_RUN`
-   documentado, sin inventar integracion.
+3. **Hodei**: el CONTRATO de invocacion esta medido — `examples/hodei-verify/verify.sh`
+   reproduce el papel del orquestador (argv hacia fuera, veredicto tipado leido del
+   journal, cero acceso a memoria/scheduler/backlog del llamante) sin tocar repo ajeno.
+   Lo que NO se afirma aqui es la integracion contra una instancia viva de
+   `hodei-meta-harness`: no hay clon alcanzable en esta maquina, y el obrero no edita
+   repos ajenos. Quien la enchufe repite exactamente la fila, cambiando el dueno del
+   candidato de `build/examples/` al directorio que Hodei ya posee.
 4. `WRITE_RESTRICTED` sigue sin target que ateste confinamiento (SDK 0.98/0.99
    no publican el seam) — refusal tipado, no promesa muda.
 
