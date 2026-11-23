@@ -81,15 +81,52 @@ class AcpObservationProjectionTest {
 
     @Test
     fun `a decoded fact never names a class of the ACP SDK`() {
-        val text = AcpSchemaMatrix.tokens.map { token ->
-            AcpObservationCodec.encode(
-                AcpObservation.AgentMessageChunk("ex-1", AcpEvidence.AGENT_CLAIM, token),
-            )
-        }.joinToString("|") + AcpObservationCodec.encode(
-            AcpObservation.UnknownUpdate("ex-1", AcpEvidence.OBSERVED, "whatever"),
+        // The promise is about what the DECODER produces, so the row must drive the decoder:
+        // hand-written payloads would only prove the hand-written payloads are clean. One real
+        // update per known variant goes in; the encoded fact comes out; no SDK package may
+        // appear in it, however the payload is shaped.
+        val updates: List<SessionUpdate> = listOf(
+            SessionUpdate.AgentMessageChunk(com.agentclientprotocol.model.ContentBlock.Text("hola")),
+            SessionUpdate.AgentThoughtChunk(com.agentclientprotocol.model.ContentBlock.Text("pienso")),
+            SessionUpdate.UserMessageChunk(com.agentclientprotocol.model.ContentBlock.Text("eco"), null, null),
+            SessionUpdate.ToolCall(
+                toolCallId = com.agentclientprotocol.model.ToolCallId("tc-1"),
+                title = "t",
+                kind = null,
+                status = null,
+            ),
+            SessionUpdate.ToolCallUpdate(toolCallId = com.agentclientprotocol.model.ToolCallId("tc-1"), title = "t", kind = null),
+            SessionUpdate.PlanUpdateV2(
+                plan = com.agentclientprotocol.model.PlanVariant.Markdown("p-1", "step", null),
+                _meta = null,
+            ),
+            SessionUpdate.PlanRemoved("plan-1", null),
+            SessionUpdate.UsageUpdate(10L, 100L, null, null),
+            SessionUpdate.CurrentModeUpdate(com.agentclientprotocol.model.SessionModeId("default")),
+            SessionUpdate.AvailableCommandsUpdate(
+                listOf(com.agentclientprotocol.model.AvailableCommand("deploy", "d", null, null)),
+            ),
+            SessionUpdate.SessionInfoUpdate("title", "now", null),
+            SessionUpdate.UnknownSessionUpdate(
+                sessionUpdateType = "brand_new",
+                rawJson = kotlinx.serialization.json.Json.parseToJsonElement("""{"blob":"x"}""")
+                    .let { it as kotlinx.serialization.json.JsonObject },
+                _meta = null,
+            ),
         )
 
-        assertFalse(text.contains("agentclientprotocol"), "an SDK type leaked into the durable payload")
+        for (update in updates) {
+            val fact = AcpObservationDecoder.decode(update, "ex-1")
+            val encoded = AcpObservationCodec.encode(fact)
+            assertFalse(
+                encoded.contains("agentclientprotocol"),
+                "an SDK type leaked into the durable payload of ${update::class.simpleName}: $encoded",
+            )
+            assertTrue(
+                AcpSchemaMatrix.tokens.contains(fact.token),
+                "the decoder invented a fact outside the declared vocabulary: ${fact.token}",
+            )
+        }
     }
 
     @Test

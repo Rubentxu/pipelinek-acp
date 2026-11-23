@@ -182,14 +182,18 @@ class AcpObservationReducerTest {
 
     @Test
     fun `the decoder never reads the bytes of an image block`() {
+        val mime = "image/png"
         val update = SessionUpdate.AgentMessageChunk(
-            ContentBlock.Image(data = "QUJDREVG", mimeType = "image/png", uri = null),
+            ContentBlock.Image(data = "QUJDREVG", mimeType = mime, uri = null),
         )
 
         val fact = AcpObservationDecoder.decode(update, "ex-1") as AcpObservation.AgentMessageChunk
 
         assertEquals("", fact.text, "an image has no text to publish")
-        assertEquals("image/image/png", fact.content)
+        // The FORM of the summary: it names the block's own kind and the MIME type the block
+        // declared, and it names no bytes. Pinning the literal string would only kill a typo.
+        assertTrue(fact.content.startsWith(mime.substringBefore('/')), "the summary does not name the kind: ${fact.content}")
+        assertTrue(fact.content.contains(mime), "the summary lost the declared MIME type: ${fact.content}")
         assertTrue(!AcpObservationCodec.encode(fact).contains("QUJDREVG"), "the payload rode into the durable log")
     }
 
