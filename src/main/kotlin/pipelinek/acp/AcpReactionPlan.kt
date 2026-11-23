@@ -120,13 +120,30 @@ fun acpOn(id: String, selector: AcpEventSelector, once: Boolean = false): AcpRea
 fun acpAwait(condition: AcpEventSelector, timeoutMillis: Long): AcpAwaitDeclaration =
     AcpAwaitDeclaration(condition, timeoutMillis)
 
-/** One declared reaction, resolved to the static address the handler will dispatch. */
+/**
+ * One declared reaction, resolved to the static address the handler will dispatch.
+ *
+ * [isDefault] marks the unnamed reaction an empty plan compiles to — the slot `acpReactive`
+ * has always shipped. It keeps the shipped attempt key so a recovered pre-PKH-137 run and a
+ * post-PKH-137 run of the same declaration write the SAME deterministic path segment; named
+ * reactions derive `acp-reaction.<id>` and cannot collide with it.
+ */
 class AcpCompiledReaction(
     val id: String,
     val slot: PluginStepId,
     val selector: AcpEventSelector,
     val once: Boolean,
-)
+    val isDefault: Boolean = false,
+) {
+
+    /** The segment key every invocation of this reaction's attempt identity carries. */
+    val attemptKey: PluginStepId
+        get() = if (isDefault) {
+            AcpReactiveStepDefinition.ATTEMPT_KEY
+        } else {
+            PluginStepId("${AcpReactiveStepDefinition.ATTEMPT_KEY.value}.$id")
+        }
+}
 
 /** The verdict of compiling a reaction plan: routed, or refused with every reason at once. */
 sealed class AcpPlanCompilation {
@@ -166,7 +183,15 @@ fun compileAcpReactionPlan(
         if (reasons.isNotEmpty()) return AcpPlanCompilation.Rejected(reasons)
         val default = AcpReactiveStepDefinition.REACTION_SLOT
         return AcpPlanCompilation.Compiled(
-            reactions = listOf(AcpCompiledReaction(default.value, default, AcpEventSelector.AnyUpdate, once = false)),
+            reactions = listOf(
+                AcpCompiledReaction(
+                    default.value,
+                    default,
+                    AcpEventSelector.AnyUpdate,
+                    once = false,
+                    isDefault = true,
+                ),
+            ),
             awaits = awaits,
         )
     }
