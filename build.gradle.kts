@@ -64,6 +64,10 @@ dependencies {
     // plugin that bundled it would run beside a second copy of the very port the host
     // admits it against.
     compileOnly("dev.rubentxu.pipelinek:pipelinek-runtime-api:$sdkVersion")
+    // The event-registry seam a plugin contributes event kinds through and emits on: the
+    // observation projection compiles against it and the HOST supplies it at runtime, exactly
+    // like every other contract. Bundling it would put a second registry inside the artifact.
+    compileOnly("dev.rubentxu.pipelinek:pipelinek-events:$sdkVersion")
 
     // The ACP client is private machinery of this plugin: nothing in a pipeline script
     // touches it, only the step handler does. It therefore belongs on the runtime
@@ -79,6 +83,9 @@ dependencies {
     // contracts the plugin compiles against, or it could not emit a manifest at all.
     add("sdkForManifestEmission", "dev.rubentxu.pipelinek:pipelinek-domain:$sdkVersion")
     add("sdkForManifestEmission", "dev.rubentxu.pipelinek:pipelinek-runtime-api:$sdkVersion")
+    // The manifest emitter loads the contributor's classes to read the event kinds the plugin
+    // declares, and those classes name the registry seam.
+    add("sdkForManifestEmission", "dev.rubentxu.pipelinek:pipelinek-events:$sdkVersion")
 
     // The contract tests CHECK the engine instead of only compiling against it; a test is
     // not shipped, so putting the contracts on the test classpath costs nothing.
