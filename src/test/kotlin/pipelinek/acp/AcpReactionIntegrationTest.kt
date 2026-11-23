@@ -14,6 +14,7 @@ import dev.rubentxu.pipeline.v2.domain.step.SlotResolution
 import dev.rubentxu.pipeline.v2.domain.step.StepCapability
 import dev.rubentxu.pipeline.v2.domain.step.StepCapabilityAccess
 import dev.rubentxu.pipeline.v2.domain.step.StepHandlerContext
+import dev.rubentxu.pipeline.v2.events.registry.PLUGIN_EVENT_EMISSION_CAPABILITY
 import dev.rubentxu.pipeline.v2.dsl.StageScope
 import dev.rubentxu.pipeline.v2.dsl.StepSpec
 import dev.rubentxu.pipeline.v2.runtime.input.INPUT_DECISIONS_CAPABILITY
@@ -184,6 +185,7 @@ class AcpReactionIntegrationTest {
                         mapOf(
                             BODY_SLOT_CAPABILITY to slot,
                             INPUT_DECISIONS_CAPABILITY to AcpUnansweredInputDecisions(),
+                            PLUGIN_EVENT_EMISSION_CAPABILITY to AcpUnregisteredEventEmission(),
                         ),
                     ),
                 ),

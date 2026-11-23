@@ -19,12 +19,16 @@ import dev.rubentxu.pipeline.v2.domain.step.StepCapability
 import dev.rubentxu.pipeline.v2.domain.step.StepCapabilityAccess
 import dev.rubentxu.pipeline.v2.runtime.input.INPUT_DECISIONS_CAPABILITY
 import dev.rubentxu.pipeline.v2.domain.step.StepHandlerContext
+import dev.rubentxu.pipeline.v2.events.registry.PLUGIN_EVENT_EMISSION_CAPABILITY
+import dev.rubentxu.pipeline.v2.events.registry.EmissionOutcome
+import dev.rubentxu.pipeline.v2.events.registry.PluginEventEmission
 import dev.rubentxu.pipeline.v2.domain.step.resolveBodyExecutionPolicy
 import dev.rubentxu.pipeline.v2.dsl.StepEmitter
 import java.nio.file.Files
 import kotlin.reflect.KClass
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -194,6 +198,9 @@ class AcpReactiveBodyTest {
                             // The reactive step declares the human-decision capability and
                             // reads the port: this turn never asks a person anything.
                             INPUT_DECISIONS_CAPABILITY to AcpUnansweredInputDecisions(),
+                            // The reactive turn publishes its lifecycle facts through the
+                            // 136 seam; here no consumer registered the kinds.
+                            PLUGIN_EVENT_EMISSION_CAPABILITY to AcpUnregisteredEventEmission(),
                         ),
                     ),
                 ),
@@ -270,5 +277,76 @@ class AcpReactiveBodyTest {
             """.trimIndent(),
         )
         return script
+    }
+
+    /** Every kind the plugin declares is accepted here; the payloads are the row. */
+    private class RecordingEmission : PluginEventEmission {
+        val payloads = mutableListOf<Pair<String, Any?>>()
+
+        override fun <P : Any> emit(kind: String, payload: P): EmissionOutcome {
+            payloads.add(kind to payload)
+            return EmissionOutcome.Emitted(
+                dev.rubentxu.pipeline.v2.events.PluginEventEmitted(
+                    eventId = "evt-reactive",
+                    runId = "run-reactive-lifecycle",
+                    sequence = 1L,
+                    occurredAt = java.time.Instant.EPOCH,
+                    registryKind = kind,
+                    schemaVersion = AcpObservationCodec.SCHEMA_VERSION,
+                    payload = AcpObservationCodec.encode(payload as AcpObservation),
+                    emittedBy = AcpPluginDeclaration.CONTRIBUTOR_ID,
+                ),
+            )
+        }
+
+        val kinds: Set<String> get() = payloads.map { it.first }.toSet()
+    }
+
+    @Test
+    fun `a reactive turn publishes its lifecycle facts through the seam the other steps use`() {
+        // The reactive exchange shares AcpConnection's path and PKH-136's publisher: the facts
+        // the plugin establishes about its own exchange — it started, the turn ended — must
+        // reach the same stream whichever step opened it. There is no second vocabulary here
+        // because there is no second publisher: the runner reacts, the seam redacts and speaks.
+        val agent = reactiveAgent()
+        val emission = RecordingEmission()
+        val slot = RecordingSlot()
+        val workDir = Files.createTempDirectory("acp-reactive-lifecycle-")
+        val output = runBlocking {
+            AcpReactiveStepDefinition.handler.execute(
+                AcpReactiveInput(
+                    command = listOf("python3", "-I", agent.toString()),
+                    prompt = "react",
+                    cwd = workDir.toString(),
+                    timeoutSeconds = 60,
+                ),
+                StepHandlerContext(
+                    runId = RunId("run-reactive-lifecycle"),
+                    stepIndex = 0,
+                    capabilities = BoundCapabilities(
+                        mapOf(
+                            BODY_SLOT_CAPABILITY to slot,
+                            INPUT_DECISIONS_CAPABILITY to AcpUnansweredInputDecisions(),
+                            PLUGIN_EVENT_EMISSION_CAPABILITY to emission,
+                        ),
+                    ),
+                ),
+            )
+        }
+        assertTrue(output.ok, "the lifecycle turn must complete: ${output.failureKind} ${output.detail}")
+        val kinds = emission.kinds
+        assertTrue(
+            AcpFactToken.kindOf(AcpFactToken.EXCHANGE_STARTED) in kinds,
+            "the reactive exchange never said it started: $kinds",
+        )
+        val turn = emission.payloads
+            .first { it.first == AcpFactToken.kindOf(AcpFactToken.TURN_ENDED) }
+            .second as AcpObservation.TurnEnded
+        assertEquals(1, turn.turnIndex, "one prompt turn was run")
+        assertEquals("END_TURN", turn.stopReason, "the stream carries the stop reason the agent gave")
+        assertFalse(
+            AcpFactToken.kindOf(AcpFactToken.EXCHANGE_CANCELLED) in kinds,
+            "a completed reactive turn must not claim a cancellation: $kinds",
+        )
     }
 }

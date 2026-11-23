@@ -28,6 +28,8 @@ import dev.rubentxu.pipeline.v2.domain.step.StepCodec
 import dev.rubentxu.pipeline.v2.domain.step.StepContract
 import dev.rubentxu.pipeline.v2.domain.step.StepDefinition
 import dev.rubentxu.pipeline.v2.domain.step.StepHandler
+import dev.rubentxu.pipeline.v2.events.registry.PLUGIN_EVENT_EMISSION_CAPABILITY
+import dev.rubentxu.pipeline.v2.events.registry.PluginEventEmission
 import dev.rubentxu.pipeline.v2.runtime.input.INPUT_DECISIONS_CAPABILITY
 import dev.rubentxu.pipeline.v2.runtime.input.InputDecisions
 import java.nio.file.Path
@@ -153,10 +155,14 @@ object AcpReactiveStepDefinition :
             // any effect, and the check reads the DECLARATION, not what the handler reads.
             // The human-decision capability is declared because this step runs a reverse
             // leg too: the agent may ask the client for a person's input while it reacts.
+            // The emission capability is declared because the reactive turn is an exchange
+            // like any other: its lifecycle facts ride PKH-136's published seam, and the
+            // redaction belongs to that publisher — never to a second one invented here.
             requiredCapabilities = setOf(
                 BODY_SLOT_CAPABILITY,
                 BODY_CONTINUATION_CAPABILITY,
                 INPUT_DECISIONS_CAPABILITY,
+                PLUGIN_EVENT_EMISSION_CAPABILITY,
             ),
         )
     }
@@ -176,7 +182,14 @@ object AcpReactiveStepDefinition :
             is AcpPlanCompilation.Compiled -> {
                 val decisions: InputDecisions =
                     context.capabilities.get(INPUT_DECISIONS_CAPABILITY, InputDecisions::class)
-                runReactiveTurn(input, slot, decisions, compiled)
+                val emission: PluginEventEmission =
+                    context.capabilities.get(PLUGIN_EVENT_EMISSION_CAPABILITY, PluginEventEmission::class)
+                withObservationPublisher(
+                    emission,
+                    AcpObservationPublisher.exchangeRefOf(context),
+                ) { publisher ->
+                    runReactiveTurn(input, slot, decisions, compiled, publisher)
+                }
             }
         }
     }
@@ -195,6 +208,7 @@ object AcpReactiveStepDefinition :
         slot: BodySlotInvoker,
         decisions: InputDecisions,
         compiled: AcpPlanCompilation.Compiled,
+        publisher: AcpUpdateSink,
     ): AcpReactiveOutput {
         val runner = AcpReactionRunner(slot, compiled.reactions)
         val awaitVerdicts = arrayOfNulls<AcpAwaitVerdict>(compiled.awaits.size)
@@ -223,6 +237,7 @@ object AcpReactiveStepDefinition :
                         AcpPromptInput(input.command, input.prompt, input.cwd, input.timeoutSeconds),
                         reverse,
                         AcpReaction { runner.submit(it) },
+                        observation = publisher,
                     )
             } finally {
                 runner.finish()
