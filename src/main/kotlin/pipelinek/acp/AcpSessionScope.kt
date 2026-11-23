@@ -173,14 +173,18 @@ class AcpSessionConnection(private val pluginVersion: String) {
     private val inFlight = AtomicBoolean(false)
 
     /** The blocking entry point for tests and callers outside a coroutine. */
-    fun run(input: AcpSessionInput): AcpSessionOutput = runBlocking { exchange(input) }
+    fun run(input: AcpSessionInput, observation: AcpUpdateSink? = null): AcpSessionOutput =
+        runBlocking { exchange(input, observation) }
 
     /**
      * Run the whole scope. AC#4's single-active-prompt rule applies to the scope itself: at
      * most one exchange is in flight per instance, and a second concurrent attempt is
      * refused before anything is launched.
      */
-    suspend fun exchange(input: AcpSessionInput): AcpSessionOutput {
+    suspend fun exchange(
+        input: AcpSessionInput,
+        observation: AcpUpdateSink? = null,
+    ): AcpSessionOutput {
         val badMcp = input.mcpServers.firstOrNull { it.transport !in VALID_MCP_TRANSPORTS }
         if (badMcp != null) {
             return AcpSessionOutcome.toOutput(
@@ -214,13 +218,13 @@ class AcpSessionConnection(private val pluginVersion: String) {
             )
         }
         try {
-            return runOnce(wireInput)
+            return runOnce(wireInput, observation)
         } finally {
             inFlight.set(false)
         }
     }
 
-    private suspend fun runOnce(input: AcpSessionInput): AcpSessionOutput {
+    private suspend fun runOnce(input: AcpSessionInput, observation: AcpUpdateSink?): AcpSessionOutput {
         val process = try {
             AcpAgentProcess.open(input.command)
         } catch (e: AgentLaunchFailed) {
@@ -229,7 +233,7 @@ class AcpSessionConnection(private val pluginVersion: String) {
         val job = SupervisorJob()
         val scope = CoroutineScope(job + Dispatchers.IO)
         return try {
-            withTimeout(input.timeoutSeconds * 1000) { runScope(input, process, scope) }
+            withTimeout(input.timeoutSeconds * 1000) { runScope(input, process, scope, observation) }
         } catch (e: TimeoutCancellationException) {
             AcpSessionOutcome.toOutput(refusal = AcpRefusal.AgentTimeout(input.timeoutSeconds))
         } catch (e: UnsupportedProtocolVersionException) {
@@ -273,6 +277,7 @@ class AcpSessionConnection(private val pluginVersion: String) {
         input: AcpSessionInput,
         process: AcpAgentProcess,
         scope: CoroutineScope,
+        observation: AcpUpdateSink? = null,
     ): AcpSessionOutput {
         val transport = StdioTransport(
             parentScope = scope,
@@ -432,7 +437,7 @@ class AcpSessionConnection(private val pluginVersion: String) {
                 val reply = StringBuilder()
                 var stopReason = ""
                 try {
-                    promptInto(session, turn, reply) { stopReason = it }
+                    promptInto(session, turn, reply, observation) { stopReason = it }
                 } catch (e: CancellationException) {
                     // Budget or engine withdrawal: say session/cancel while the protocol
                     // still lives, then let the unwind rethrow — the tree reap in runOnce's
@@ -504,16 +509,19 @@ class AcpSessionConnection(private val pluginVersion: String) {
         session: ClientSession,
         turn: AcpTurnInput,
         reply: StringBuilder,
+        observation: AcpUpdateSink? = null,
         onStop: (String) -> Unit,
     ) {
         val blocks = mutableListOf<ContentBlock>(ContentBlock.Text(text = turn.text))
         turn.content.forEach { blocks.add(it.toWire()) }
         session.prompt(blocks).collect { event ->
             when (event) {
-                is Event.SessionUpdateEvent ->
+                is Event.SessionUpdateEvent -> {
+                    observation?.accept(event.update)
                     (event.update as? SessionUpdate.AgentMessageChunk)?.let { chunk ->
                         (chunk.content as? ContentBlock.Text)?.let { reply.append(it.text) }
                     }
+                }
                 is Event.PromptResponseEvent -> onStop(event.response.stopReason.name)
             }
         }
