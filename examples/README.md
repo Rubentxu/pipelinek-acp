@@ -89,4 +89,7 @@ La matriz NO se reescribe a mano: `./scripts/export-support-matrix.sh` la deriva
 fila queda sin clasificar). Default restrictivo: lo no `TESTED` es `UNSUPPORTED` o
 `ROLE_EXCLUDED` y no se promete. Costes observables y limites: los `timeoutSeconds` y
 `maxRepairAttempts` de cada pipeline son el presupuesto publicado; los resultados de
-las filas ejecutadas quedan en los recibos de la puerta.
+las filas ejecutadas quedan en los recibos de la puerta. La guia publica completa
+(perfiles, defaults restrictivos, limites medidos y NOT_RUNs) esta en
+[`docs/agentic-examples-guide.md`](../docs/agentic-examples-guide.md) y la matriz
+derivada en [`docs/support-matrix-derived.md`](../docs/support-matrix-derived.md).
