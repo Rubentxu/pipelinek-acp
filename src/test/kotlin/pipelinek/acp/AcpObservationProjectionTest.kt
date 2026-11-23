@@ -1,6 +1,7 @@
 package pipelinek.acp
 
 import com.agentclientprotocol.model.SessionUpdate
+import java.util.concurrent.TimeUnit
 import dev.rubentxu.pipeline.v2.events.registry.EventDefinitionCreation
 import dev.rubentxu.pipeline.v2.events.registry.EventPayloadCodec
 import dev.rubentxu.pipeline.v2.events.registry.EmissionOutcome
@@ -129,6 +130,73 @@ class AcpObservationProjectionTest {
         val gap = emission.payloads.single() as AcpObservation.ObservationGap
         assertEquals(1, gap.unpublished)
         assertEquals(AcpEvidence.VERIFIED, gap.evidence, "the loss is the plugin's own fact, not the agent's")
+    }
+
+    @Test
+    fun `the fold is never mutated from two threads at once`() {
+        // accept runs on the thread of the prompt flow AND on the thread of the transport (the
+        // reverse notifications arrive there). The reducer's laws — the message keeps every
+        // character said, a completion happens once — only hold if one fold runs at a time, so
+        // this storm drives accept from four threads at once and measures the laws afterwards.
+        val emission = RecordingEmission(AcpSchemaMatrix.kinds.toSet())
+        val publisher = AcpObservationPublisher(emission) { "run-1#0" }
+        val threads = 4
+        val perThread = 500
+        val chunkChars = 8
+        val ready = java.util.concurrent.CyclicBarrier(threads)
+        val failures = java.util.concurrent.ConcurrentLinkedQueue<Throwable>()
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(threads)
+        val done = java.util.concurrent.CountDownLatch(threads)
+        repeat(threads) { thread ->
+            pool.submit {
+                try {
+                    ready.await()
+                    repeat(perThread) { i ->
+                        publisher.accept(
+                            SessionUpdate.AgentMessageChunk(
+                                com.agentclientprotocol.model.ContentBlock.Text("$thread$i".padEnd(chunkChars, '.')),
+                            ),
+                        )
+                        if (i % 50 == 0) {
+                            // The same call, announced terminal by every thread: the completion
+                            // law is one per call, so the fold cannot be allowed to interleave.
+                            publisher.accept(
+                                SessionUpdate.ToolCall(
+                                    toolCallId = com.agentclientprotocol.model.ToolCallId("tc-storm"),
+                                    title = "storm",
+                                    kind = null,
+                                    status = com.agentclientprotocol.model.ToolCallStatus.COMPLETED,
+                                ),
+                            )
+                        }
+                    }
+                } catch (e: Throwable) {
+                    failures.add(e)
+                } finally {
+                    done.countDown()
+                }
+            }
+        }
+        assertTrue(done.await(30, TimeUnit.SECONDS), "an accept parked the storm — the fold is not confined")
+        pool.shutdownNow()
+        assertEquals(emptyList<Throwable>(), failures.toList(), "accept threw under concurrent use")
+        publisher.drain()
+        publisher.publishGap()
+
+        val chunks = emission.payloads.filterIsInstance<AcpObservation.AgentMessageChunk>()
+        val gap = emission.payloads.filterIsInstance<AcpObservation.ObservationGap>().single()
+        // Every character said is either in a published fact or in a counted loss: a fold that
+        // lost appends to a racing StringBuilder publishes less than the stream owes.
+        assertEquals(
+            threads.toLong() * perThread * chunkChars,
+            chunks.sumOf { it.text.length.toLong() } + gap.lost.toLong() * chunkChars,
+            "characters vanished between accept and the lane — the reducer was mutated concurrently",
+        )
+        assertEquals(
+            1,
+            emission.payloads.count { it is AcpObservation.ToolCallCompleted },
+            "the same call completed more than once — the fold interleaved",
+        )
     }
 
     @Test
