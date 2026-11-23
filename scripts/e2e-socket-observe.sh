@@ -19,6 +19,7 @@
 # ese limite se registra en el recibo — es un gap del host, no de este plugin.
 set -eu
 cd "$(dirname "$0")/.."
+cd "$(pwd -P)"  # el servicio admite workspaces por ruta real, no logica
 . scripts/host-sdk.sh
 acp_use_host "$(acp_sdk_version)"
 JAR="$PWD/build/libs/pipelinek-acp-0.1.0-operator.jar"
@@ -91,7 +92,7 @@ chmod 600 "$auth_file"
 
 pipelinek serve --db "$state/run.sqlite" --control-root "$state/control" \
   --socket "$SOCK" --trust-profile trusted-local --authorization-file "$auth_file" \
-  --scripts "$state/scripts" --workspaces "$(dirname "$PWD")" \
+  --scripts "$state/scripts" \
   > "$state/serve.log" 2>&1 &
 SERVE_PID=$!
 
@@ -146,7 +147,7 @@ fi
 
 # --- carril de cancelacion supervisada: run.start por el socket y run.cancel.
 { echo "== start supervisado (sleepy, host-only: el servicio no puede nominar el plugin jar) =="
-  probe start sleepy.pipeline.kts "$PWD"
+  probe start sleepy.pipeline.kts
 } >> "$LOG"
 sleep 2
 supervised_id="$(grep -oE '\{"lane": "start".*' "$LOG" | grep -oE '[0-9a-f]{8}-[0-9a-f-]{20,}' | head -1 || true)"
