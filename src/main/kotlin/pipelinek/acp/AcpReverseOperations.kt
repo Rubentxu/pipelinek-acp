@@ -117,6 +117,7 @@ class AcpReverseOperations(
     private val ledger: AcpPermissionLedger,
     private val humanDecision: AcpHumanDecision? = null,
     private val waitBudgetMillis: () -> Long? = { null },
+    private val observer: AcpUpdateSink? = null,
 ) : ClientSessionOperations {
 
     private val terminals = ConcurrentHashMap<String, TerminalHandle>()
@@ -174,6 +175,11 @@ class AcpReverseOperations(
                 "tool ${notification.title?.take(40).orEmpty()} ${notification.status?.name?.lowercase().orEmpty()}",
             )
         }
+        // The notification is ALSO an update the agent sent: what the SDK routes here arrives
+        // with no prompt in flight, so this is its only way into the run's event stream. The
+        // journal stays the step-output record; the observer is the stream record — one is not
+        // paid with the loss of the other.
+        observer?.accept(notification)
     }
 
     // ----------------------------------------------------------------------------------
@@ -593,19 +599,26 @@ class AcpReverseSession(
         AcpToolEffect.EXECUTE in authority.allowedEffects &&
         profile != AcpTaskProfile.READONLY
 
-    fun factory(): ClientOperationsFactory = ClientOperationsFactory { sessionId, _ ->
-        AcpReverseOperations(
-            sessionId = sessionId,
-            workspaceRoot = workspaceRoot,
-            profile = profile,
-            authority = authority,
-            journal = journal,
-            ledger = ledger,
-            humanDecision = humanDecision,
-            waitBudgetMillis = ::remainingBudgetMillis,
-        )
-            .also { instances.add(it) }
-    }
+    /**
+     * The operations factory for one exchange. [observation] is the run's projection seam:
+     * notifications the SDK delivers outside the prompt stream route to it too, so a task
+     * with a reverse leg publishes what the agent said instead of journaling it locally.
+     */
+    fun factory(observation: AcpUpdateSink? = null): ClientOperationsFactory =
+        ClientOperationsFactory { sessionId, _ ->
+            AcpReverseOperations(
+                sessionId = sessionId,
+                workspaceRoot = workspaceRoot,
+                profile = profile,
+                authority = authority,
+                journal = journal,
+                ledger = ledger,
+                humanDecision = humanDecision,
+                waitBudgetMillis = ::remainingBudgetMillis,
+                observer = observation,
+            )
+                .also { instances.add(it) }
+        }
 
     /**
      * What is left of the turn's budget, which is what the person may still take.
