@@ -118,6 +118,7 @@ class AcpConnection(private val pluginVersion: String) {
         environment: Map<String, String>,
         workingDirectory: Path,
         reverse: AcpReverseSession? = null,
+        observation: AcpUpdateSink? = null,
     ): AcpExchange {
         val process = AcpAgentProcess.launch(input.command, environment, workingDirectory)
             .getOrElse { e -> return AcpExchange.Refused(AcpRefusal.AgentUnreachable(e.message ?: e.toString())) }
@@ -132,6 +133,7 @@ class AcpConnection(private val pluginVersion: String) {
                     scope = scope,
                     cancelOnUnwind = true,
                     reverse = reverse,
+                    observation = observation,
                 )
             }
         } catch (e: TimeoutCancellationException) {

@@ -9,6 +9,7 @@ import dev.rubentxu.pipeline.v2.domain.step.StepCapabilityAccess
 import dev.rubentxu.pipeline.v2.domain.step.StepHandlerContext
 import dev.rubentxu.pipeline.v2.domain.workspace.ExecutionLocation
 import dev.rubentxu.pipeline.v2.domain.workspace.WorkspaceLease
+import dev.rubentxu.pipeline.v2.events.registry.PLUGIN_EVENT_EMISSION_CAPABILITY
 import dev.rubentxu.pipeline.v2.runtime.input.INPUT_DECISIONS_CAPABILITY
 import java.nio.file.Path
 import kotlin.reflect.KClass
@@ -44,6 +45,10 @@ class AcpTaskIsolationTest {
                 // before it does anything else, so the table binds it: this turn never
                 // asks a person anything.
                 INPUT_DECISIONS_CAPABILITY to AcpUnansweredInputDecisions(),
+                // The step also declares the emission seam it publishes its observation
+                // through: the table binds it, and this turn's agent never gets far enough
+                // to say anything.
+                PLUGIN_EVENT_EMISSION_CAPABILITY to AcpUnregisteredEventEmission(),
             ),
         )
 
@@ -80,6 +85,7 @@ class AcpTaskIsolationTest {
                 EXECUTION_LOCATION_CAPABILITY to ExecutionLocation(WorkspaceLease.Managed(root), root),
                 StepCapability("credentials.basic") to source,
                 INPUT_DECISIONS_CAPABILITY to AcpUnansweredInputDecisions(),
+                PLUGIN_EVENT_EMISSION_CAPABILITY to AcpUnregisteredEventEmission(),
             ),
         )
 

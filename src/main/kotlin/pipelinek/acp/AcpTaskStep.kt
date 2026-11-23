@@ -13,6 +13,8 @@ import dev.rubentxu.pipeline.v2.domain.step.StepDefinition
 import dev.rubentxu.pipeline.v2.domain.step.StepHandler
 import dev.rubentxu.pipeline.v2.domain.step.StepCapability
 import dev.rubentxu.pipeline.v2.domain.workspace.ExecutionLocation as WorkspaceExecutionLocation
+import dev.rubentxu.pipeline.v2.events.registry.PLUGIN_EVENT_EMISSION_CAPABILITY
+import dev.rubentxu.pipeline.v2.events.registry.PluginEventEmission
 import dev.rubentxu.pipeline.v2.runtime.input.INPUT_DECISIONS_CAPABILITY
 import dev.rubentxu.pipeline.v2.runtime.input.InputDecisions
 import java.nio.file.Path
@@ -83,6 +85,8 @@ object AcpTaskStepDefinition : StepDefinition<AcpTaskInput, AcpTaskOutput> {
             // the client for a person's input, and the port is how that question reaches a
             // person through the service.
             requiredCapabilities = setOf(
+                // The delegation publishes what it observed: the seam, declared.
+                PLUGIN_EVENT_EMISSION_CAPABILITY,
                 EXECUTION_LOCATION_CAPABILITY,
                 StepCapability("credentials.basic"),
                 INPUT_DECISIONS_CAPABILITY,
@@ -126,12 +130,20 @@ object AcpTaskStepDefinition : StepDefinition<AcpTaskInput, AcpTaskOutput> {
             humanDecision = AcpHumanDecision(decisions),
             budgetMillis = input.budgetSeconds * 1000,
         )
-        val exchange = AcpConnection(AcpPluginDeclaration.declaredVersion()).exchangeTask(
-            input = input,
-            environment = AcpTaskIsolation.childEnvironment(credential),
-            workingDirectory = effectiveCwd,
-            reverse = reverse,
-        )
+        val emission: PluginEventEmission =
+            context.capabilities.get(PLUGIN_EVENT_EMISSION_CAPABILITY, PluginEventEmission::class)
+        val exchange = withObservationPublisher(
+            emission,
+            AcpObservationPublisher.exchangeRefOf(context),
+        ) { publisher ->
+            AcpConnection(AcpPluginDeclaration.declaredVersion()).exchangeTask(
+                input = input,
+                environment = AcpTaskIsolation.childEnvironment(credential),
+                workingDirectory = effectiveCwd,
+                reverse = reverse,
+                observation = publisher,
+            )
+        }
         AcpTaskOutcome.toOutput(exchange)
     }
 }

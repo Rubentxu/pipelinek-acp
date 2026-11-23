@@ -7,6 +7,7 @@ import dev.rubentxu.pipeline.v2.domain.step.Digest
 import dev.rubentxu.pipeline.v2.domain.step.ManifestSchemaVersion
 import dev.rubentxu.pipeline.v2.domain.step.PipelineKApiRange
 import dev.rubentxu.pipeline.v2.domain.step.PluginContributions
+import dev.rubentxu.pipeline.v2.domain.step.PluginEventContribution
 import dev.rubentxu.pipeline.v2.domain.step.PluginFamily
 import dev.rubentxu.pipeline.v2.domain.step.PluginManifest
 import dev.rubentxu.pipeline.v2.domain.step.PluginManifestCodec
@@ -120,7 +121,11 @@ object AcpPluginDeclaration {
                     PluginStepContribution(it.contract.key, it.contract.requiredCapabilities)
                 },
                 directives = emptyList(),
-                events = emptyList(),
+                // The kinds the contributor actually provides, read from the same matrix that
+                // names the facts: the host cross-checks this list against what the
+                // EventDefinitionContributor registers, and a manifest that declared a kind by
+                // hand would be a second authority able to describe a fact nobody publishes.
+                events = AcpSchemaMatrix.kinds.sorted().map { PluginEventContribution(it) },
                 capabilities = STEPS.flatMapTo(linkedSetOf()) { it.contract.requiredCapabilities },
             ),
         )

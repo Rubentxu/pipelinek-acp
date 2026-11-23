@@ -24,6 +24,8 @@ import dev.rubentxu.pipeline.v2.domain.step.StepInvocationOutcome
 import dev.rubentxu.pipeline.v2.domain.step.StepRegistryBuilder
 import dev.rubentxu.pipeline.v2.domain.workspace.ExecutionLocation
 import dev.rubentxu.pipeline.v2.domain.workspace.WorkspaceLease
+import dev.rubentxu.pipeline.v2.events.registry.EventDefinitionCreation
+import dev.rubentxu.pipeline.v2.events.registry.PLUGIN_EVENT_EMISSION_CAPABILITY
 import dev.rubentxu.pipeline.v2.runtime.input.INPUT_DECISIONS_CAPABILITY
 import dev.rubentxu.pipeline.v2.runtime.input.InputDecision
 import dev.rubentxu.pipeline.v2.runtime.input.InputDecisions
@@ -205,7 +207,25 @@ class AcpHumanInteractionTest {
         // and the top-level set must be the union of the contracts. A manifest that
         // declared the capability in one place only would be refused at admission.
         val manifest = AcpPluginDeclaration.manifest()
-        PluginManifestValidator.validate(manifest, AcpPluginDeclaration.STEPS)
+        // The fourth argument is the same cross-check the host makes at admission: the kinds
+        // the manifest declares must be the kinds the EventDefinitionContributor actually
+        // registers. Both lists are read from the matrix, and handing the validator the
+        // contributed set — instead of the default empty one — is what keeps this test
+        // measuring the declaration instead of inventing a second authority for it.
+        val contributed = AcpObservationContributor().definitions()
+            .mapNotNull { (it as? EventDefinitionCreation.Valid)?.definition?.kind }
+            .toSet()
+        PluginManifestValidator.validate(
+            manifest,
+            AcpPluginDeclaration.STEPS,
+            emptySet(),
+            contributed,
+        )
+        assertEquals(
+            contributed,
+            manifest.contributions.events.map { it.eventKind }.toSet(),
+            "the manifest declares kinds the contributor does not publish",
+        )
         assertTrue(
             manifest.contributions.capabilities.contains(INPUT_DECISIONS_CAPABILITY),
             "the manifest declares the human-decision capability: ${manifest.contributions.capabilities}",
@@ -286,6 +306,9 @@ class AcpHumanInteractionTest {
             mapOf(
                 EXECUTION_LOCATION_CAPABILITY to lease,
                 INPUT_DECISIONS_CAPABILITY to AcpUnansweredInputDecisions(),
+                // The delegation publishes its observation, so it declares the emission seam
+                // too: the admission is fail-closed and this bag is the one that admits it.
+                PLUGIN_EVENT_EMISSION_CAPABILITY to AcpUnregisteredEventEmission(),
                 // The host contributes the credential seam unconditionally; this delegation
                 // names no credential, so nothing reads it.
                 StepCapability("credentials.basic") to Any(),
@@ -306,6 +329,10 @@ class AcpHumanInteractionTest {
             bound.asked.contains(INPUT_DECISIONS_CAPABILITY),
             "the port reaches the handler through the key the step declared: ${bound.asked}",
         )
+        assertTrue(
+            bound.asked.contains(PLUGIN_EVENT_EMISSION_CAPABILITY),
+            "the emission seam reaches the handler through the key the step declared: ${bound.asked}",
+        )
 
         // The contrast: the admission is fail-closed, and what it reads is the DECLARATION.
         // Without the port the step does not run at all, and the refusal names the very
@@ -313,6 +340,7 @@ class AcpHumanInteractionTest {
         val unbound = RecordingAccess(
             mapOf(
                 EXECUTION_LOCATION_CAPABILITY to lease,
+                PLUGIN_EVENT_EMISSION_CAPABILITY to AcpUnregisteredEventEmission(),
                 StepCapability("credentials.basic") to Any(),
             ),
         )

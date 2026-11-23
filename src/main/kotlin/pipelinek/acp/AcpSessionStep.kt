@@ -10,6 +10,8 @@ import dev.rubentxu.pipeline.v2.domain.step.StepCodec
 import dev.rubentxu.pipeline.v2.domain.step.StepContract
 import dev.rubentxu.pipeline.v2.domain.step.StepDefinition
 import dev.rubentxu.pipeline.v2.domain.step.StepHandler
+import dev.rubentxu.pipeline.v2.events.registry.PLUGIN_EVENT_EMISSION_CAPABILITY
+import dev.rubentxu.pipeline.v2.events.registry.PluginEventEmission
 import kotlinx.serialization.json.Json
 
 /**
@@ -73,14 +75,21 @@ object AcpSessionStepDefinition : StepDefinition<AcpSessionInput, AcpSessionOutp
             ),
             inputCodec = InputCodec,
             outputCodec = OutputCodec,
-            requiredCapabilities = emptySet(),
+            // The scope publishes what it observed, so it asks for the published emission seam:
+            // a host that does not bind it refuses the step instead of running a session whose
+            // facts vanish.
+            requiredCapabilities = setOf(PLUGIN_EVENT_EMISSION_CAPABILITY),
         )
     }
 
-    override val handler = StepHandler<AcpSessionInput, AcpSessionOutput> { input, _ ->
+    override val handler = StepHandler<AcpSessionInput, AcpSessionOutput> { input, context ->
         // suspend all the way: the agent I/O runs on the connection's own IO scope, never
         // parking an engine thread in a blocking run. The scope's finally releases the
         // process through completion, refusal, cancellation and timeout alike (AC#1).
-        AcpSessionConnection(AcpPluginDeclaration.declaredVersion()).exchange(input)
+        val emission: PluginEventEmission =
+            context.capabilities.get(PLUGIN_EVENT_EMISSION_CAPABILITY, PluginEventEmission::class)
+        withObservationPublisher(emission, AcpObservationPublisher.exchangeRefOf(context)) { publisher ->
+            AcpSessionConnection(AcpPluginDeclaration.declaredVersion()).exchange(input, publisher)
+        }
     }
 }
