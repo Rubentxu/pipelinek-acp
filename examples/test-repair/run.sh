@@ -21,6 +21,9 @@ rm -rf "$repo/build/examples/repair-archive"
 # a policy shim must not take over the disposable repositories of this example.
 git_bin="git"
 export GIT_BIN
+# Y config global aislada: los ganchos de política del usuario (hook.* en ~/.gitconfig) tampoco
+# deciden sobre los repositorios desechables del ejemplo — AcpRepairFixtureTest hace lo mismo.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 IFS=':' read -ra path_dirs <<< "$PATH"
 for d in "${path_dirs[@]}"; do
   cand="$d/git"

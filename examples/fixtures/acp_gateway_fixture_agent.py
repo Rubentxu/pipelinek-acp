@@ -160,8 +160,11 @@ def main():
             }})
         elif method == "session/new":
             servers = (msg.get("params") or {}).get("mcpServers") or []
-            http_servers = [s for s in servers if s.get("transport") == "http"]
-            gateway_url = http_servers[0]["url"] if http_servers else ""
+            # The wire's discriminator: an http MCP server is offered by the gateway descriptor.
+            def is_http(server):
+                return server.get("type", server.get("transport")) == "http"
+            http_servers = [s for s in servers if is_http(s)]
+            gateway_url = http_servers[0].get("url", "") if http_servers else ""
             witness("mcp-http %d" % len(http_servers))
             write({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": SESSION_ID}})
         elif method == "session/prompt":

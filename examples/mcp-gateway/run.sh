@@ -36,9 +36,12 @@ turn = turns[-1]
 assert turn.get("ok") is True, "the reactive turn was refused: %s %s" % (
     turn.get("failureKind"), turn.get("detail"))
 
-# The agent's side: what an MCP client saw through the wire.
+# The agent's side: what an MCP client saw through the wire. The two refusals that carry no
+# result (the budget and the unknown tool / bad argument) arrive as JSON-RPC error codes —
+# -32000 is the gateway's typed policy refusal, -32602 the invalid-params one. The journal
+# half below is what names WHICH policy said no.
 reply = turn.get("reply", "")
-assert reply == "TOOLS=1|CALLED=executed:already_acknowledged:executed:call_limit_refused:err--32602:err--32602", (
+assert reply == "TOOLS=1|CALLED=executed:already_acknowledged:executed:err--32000:err--32602:err--32602", (
     "the showcase calls did not answer as the gateway laws say: %r" % reply)
 
 # The gateway's side: every call, typed, in order (PKH-139 AC#1/#2/#3).
@@ -66,15 +69,16 @@ PY
 
 # AC#2's expiry at example level: once the run is over, the gateway URL must refuse. The
 # journal still carries it — the URL is dead data, and a curl against it must say so.
-url="$(python3 -I -c "
-import json, sqlite3
-db = sqlite3.connect('file:$state/gateway.sqlite?mode=ro', uri=True)
+python3 -I - "$state/gateway.sqlite" > "$repo/build/examples/gateway-url.txt" <<'PY'
+import json, sqlite3, sys
+db = sqlite3.connect('file:%s?mode=ro' % sys.argv[1], uri=True)
 for (out,) in db.execute('select output from operation_journal where output is not null'):
     doc = json.loads(out)
     r = doc.get('result')
-    if r and '\"exposedToolCalls\"' in r:
+    if r and '"exposedToolCalls"' in r:
         print(json.loads(r).get('mcpGatewayUrl', ''))
-)")
+PY
+url="$(cat "$repo/build/examples/gateway-url.txt")"
 test -n "$url"
 if curl -fsS --max-time 3 -X POST -H 'Content-Type: application/json' -d '{}' "$url" >/dev/null 2>&1; then
   echo "the gateway outlived its scope: $url still answers" >&2

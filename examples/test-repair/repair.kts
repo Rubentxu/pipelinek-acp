@@ -14,7 +14,8 @@
 // is always the plan's argv), an unbounded budget, or a promotion verb.
 //
 // Run examples/test-repair/run.sh for the self-asserting version (it builds the two broken
-// projects first); all paths are relative to the repository root because the host runs there.
+// projects first). The step's argv commands all run INSIDE `cwd` (AcpRepairStep's acpRunArgv):
+// diff and revision are plain git calls, not a `git -C` that would double the project path.
 import pipelinek.acp.agenticRepair
 
 pipeline {
@@ -27,10 +28,8 @@ pipeline {
                 verifyCommand = listOf("python3", "-I", "check.py"),
                 cwd = "build/examples/repair-project-fix",
                 archiveDir = "build/examples/repair-archive/fix",
-                diffCommand = listOf("git", "-C", "build/examples/repair-project-fix",
-                    "diff", "--", "main.py"),
-                revisionCommand = listOf("git", "-C", "build/examples/repair-project-fix",
-                    "rev-parse", "HEAD"),
+                diffCommand = listOf("git", "diff", "--", "main.py"),
+                revisionCommand = listOf("git", "rev-parse", "HEAD"),
                 maxRepairAttempts = 3,
                 timeoutSeconds = 120,
             )
@@ -43,10 +42,8 @@ pipeline {
                 verifyCommand = listOf("python3", "-I", "check.py"),
                 cwd = "build/examples/repair-project-lie",
                 archiveDir = "build/examples/repair-archive/lie",
-                diffCommand = listOf("git", "-C", "build/examples/repair-project-lie",
-                    "diff", "--", "main.py"),
-                revisionCommand = listOf("git", "-C", "build/examples/repair-project-lie",
-                    "rev-parse", "HEAD"),
+                diffCommand = listOf("git", "diff", "--", "main.py"),
+                revisionCommand = listOf("git", "rev-parse", "HEAD"),
                 maxRepairAttempts = 2,
                 timeoutSeconds = 120,
             )
