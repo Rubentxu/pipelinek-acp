@@ -93,14 +93,31 @@ internal class AcpObservationReducer(private val exchangeRef: () -> String) {
         is AcpObservation.UserMessageChunk -> listOf(observation)
 
         is AcpObservation.ToolCall -> {
+            val previous = toolCalls[observation.toolCallId]
             toolCalls[observation.toolCallId] = AcpToolCallState(
                 toolCallId = observation.toolCallId,
                 title = observation.title,
                 status = observation.status,
                 toolKind = observation.toolKind,
-                completed = isTerminal(observation.status),
+                completed = isTerminal(observation.status) || previous?.completed == true,
             )
-            listOf(observation)
+            // The completion law is the same at this door: an agent that announces a call
+            // already in its terminal state owes the completion fact, and owes it exactly once
+            // — a re-announcement of an end the reducer already counted publishes no second one.
+            if (isTerminal(observation.status) && previous?.completed != true) {
+                completions++
+                listOf(
+                    observation,
+                    AcpObservation.ToolCallCompleted(
+                        exchangeRef = exchangeRef(),
+                        evidence = observation.evidence,
+                        toolCallId = observation.toolCallId,
+                        status = observation.status,
+                    ),
+                )
+            } else {
+                listOf(observation)
+            }
         }
 
         is AcpObservation.ToolCallChanged -> {
