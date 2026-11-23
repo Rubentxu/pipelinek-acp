@@ -29,6 +29,12 @@ MODE (argv[1]) selects the behaviour; unused argv slots are ignored:
              release. Replies TERM=exit<n>:out-<text>:kill-err-<code>:release-ok.
   elic-probe asks a form elicitation (never advertised by the client; asking anyway is
              legal traffic) and replies ELIC=<action> — the honest answer is cancel.
+  observe    argv[2]=reply text. Before answering the prompt it sends a rich set of
+             session/update traffic — thought, tool call in progress, partial update to
+             completion, plan, and an unknown variant — with the fields the redaction
+             whitelist must NEVER read (rawInput, _meta, the unknown variant's raw JSON)
+             carrying canaries. The PKH-136 row reads the run's events table and fails
+             if a canary is found there.
 
 Speaks just enough NDJSON-RPC for initialize -> session/new -> session/prompt over
 stdio, plus the reverse methods the probes exercise. TEST scaffolding, not shipped;
@@ -52,6 +58,11 @@ def chunk(session_id, text):
         "update": {"sessionUpdate": "agent_message_chunk",
                    "content": {"type": "text", "text": text}},
     }})
+
+
+def upd(session_id, update):
+    write({"jsonrpc": "2.0", "method": "session/update", "params": {
+        "sessionId": session_id, "update": update}})
 
 
 # The agent's own requests to the client, keyed by id so the RESPONSE block can tell
@@ -258,6 +269,29 @@ def main():
                      "requestedSchema": {"type": "object", "properties": {}}},
                     "elicitation/create", "elic")
                 continue
+            elif mode == "observe":
+                # Traffic for the PKH-136 row: every agent-driven update shape the
+                # projection must turn into an event, plus the three fields it must
+                # NEVER read (rawInput, _meta, an unknown variant's raw JSON), each
+                # carrying a canary. A canary in the run's events table is the failure.
+                upd(prompt_session, {"sessionUpdate": "agent_thought_chunk",
+                                     "content": {"type": "text", "text": "planning the read"}})
+                upd(prompt_session, {"sessionUpdate": "tool_call", "toolCallId": "tc-obs-1",
+                                     "title": "read config", "kind": "read", "status": "pending",
+                                     "rawInput": {"token": "CANARY-RAWINPUT-8842"},
+                                     "_meta": {"secret": "CANARY-META-9931"}})
+                upd(prompt_session, {"sessionUpdate": "tool_call_update", "toolCallId": "tc-obs-1",
+                                     "status": "in_progress",
+                                     "rawInput": {"next": "CANARY-RAWINPUT2-7753"}})
+                upd(prompt_session, {"sessionUpdate": "tool_call_update", "toolCallId": "tc-obs-1",
+                                     "status": "completed",
+                                     "rawOutput": {"leak": "CANARY-RAWOUTPUT-6674"}})
+                upd(prompt_session, {"sessionUpdate": "plan", "entries": [
+                    {"content": "read config", "status": "completed", "priority": "high"},
+                    {"content": "report", "status": "in_progress", "priority": "medium"}]})
+                upd(prompt_session, {"sessionUpdate": "quantum_progress", "percent": 42,
+                                     "blob": "CANARY-RAWJSON-5592"})
+                text = arg2 or "fixture-reply"
             elif mode == "reply":
                 text = "task-session-%d:%s" % (session_serial, arg2 or "fixture-reply")
             else:
