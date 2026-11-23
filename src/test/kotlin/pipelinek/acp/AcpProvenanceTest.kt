@@ -81,6 +81,7 @@ class AcpProvenanceTest {
                 "pipelinek.acp.prompt",
                 "pipelinek.acp.reaction",
                 "pipelinek.acp.reactive",
+                "pipelinek.acp.repair",
                 "pipelinek.acp.session",
                 "pipelinek.acp.task",
             ),

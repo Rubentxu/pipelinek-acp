@@ -346,3 +346,95 @@ fun StageScope.acpReactive(
     val emitter: StepEmitter<StepBodyScope> = this
     emitter.acpReactive(command, prompt, cwd, timeoutSeconds, reactions, awaits)
 }
+
+/**
+ * Repair broken builds with an independent verifier: the PKH-140 recipe as a step.
+ *
+ * ```kotlin
+ * import pipelinek.acp.agenticRepair
+ * pipeline {
+ *     stages {
+ *         stage("Repair") {
+ *             agenticRepair(
+ *                 command = listOf("my-agent", "--acp"),
+ *                 repairPrompt = "make scripts/build-and-test.sh pass",
+ *                 verifyCommand = listOf("./scripts/build-and-test.sh"),
+ *                 cwd = "work/the-project",
+ *                 maxRepairAttempts = 3,
+ *             )
+ *         }
+ *     }
+ * }
+ * ```
+ *
+ * What the DSL deliberately cannot say: a verify command chosen from the agent's answer (the
+ * check is the plan's argv, always), an unbounded budget ([AcpRepairLoop.MAX_REPAIR_ATTEMPTS]
+ * caps it and [AcpRepairLoop.rejectPlan] refuses beyond), or a promotion verb — the step's
+ * output is the verdict plus ARCHIVED candidate paths; committing is a different step a person
+ * wrote. Lowering is the same single `registryStep` primitive as the other steps — one lowering,
+ * never two.
+ */
+fun <B : StepEmitter<B>> StepEmitter<B>.agenticRepair(
+    command: List<String>,
+    repairPrompt: String,
+    verifyCommand: List<String>,
+    cwd: String = "",
+    archiveDir: String = "",
+    maxRepairAttempts: Int = 3,
+    timeoutSeconds: Long = 300,
+    diffCommand: List<String> = emptyList(),
+    revisionCommand: List<String> = emptyList(),
+    priorLedgerRows: List<AcpReactionLedgerRow> = emptyList(),
+) {
+    agenticRepair(
+        AcpRepairInput(
+            command = command,
+            repairPrompt = repairPrompt,
+            verifyCommand = verifyCommand,
+            cwd = cwd,
+            archiveDir = archiveDir,
+            maxRepairAttempts = maxRepairAttempts,
+            timeoutSeconds = timeoutSeconds,
+            diffCommand = diffCommand,
+            revisionCommand = revisionCommand,
+            priorLedgerRows = priorLedgerRows,
+        ),
+    )
+}
+
+/** The full-plan route: everything the recipe needs is in the [input], encoded as declared. */
+fun <B : StepEmitter<B>> StepEmitter<B>.agenticRepair(input: AcpRepairInput) {
+    registryStep(
+        stepKey = AcpRepairStepDefinition.KEY,
+        encodedInput = AcpRepairStepDefinition.InputCodec.encode(input),
+    )
+}
+
+/** The historic `StageScope` route; see the contract route for why both exist and are one. */
+@Suppress("LongParameterList")
+fun StageScope.agenticRepair(
+    command: List<String>,
+    repairPrompt: String,
+    verifyCommand: List<String>,
+    cwd: String = "",
+    archiveDir: String = "",
+    maxRepairAttempts: Int = 3,
+    timeoutSeconds: Long = 300,
+    diffCommand: List<String> = emptyList(),
+    revisionCommand: List<String> = emptyList(),
+    priorLedgerRows: List<AcpReactionLedgerRow> = emptyList(),
+) {
+    val emitter: StepEmitter<StepBodyScope> = this
+    emitter.agenticRepair(
+        command = command,
+        repairPrompt = repairPrompt,
+        verifyCommand = verifyCommand,
+        cwd = cwd,
+        archiveDir = archiveDir,
+        maxRepairAttempts = maxRepairAttempts,
+        timeoutSeconds = timeoutSeconds,
+        diffCommand = diffCommand,
+        revisionCommand = revisionCommand,
+        priorLedgerRows = priorLedgerRows,
+    )
+}

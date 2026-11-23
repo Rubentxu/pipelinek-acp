@@ -59,6 +59,7 @@ object AcpPluginDeclaration {
             AcpSessionStepDefinition,
             AcpReactiveStepDefinition,
             AcpReactionStepDefinition,
+            AcpRepairStepDefinition,
         )
 
     private val props: Map<String, String> by lazy { releaseProperties(AcpPluginDeclaration::class.java) }
