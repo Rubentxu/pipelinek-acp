@@ -91,6 +91,32 @@ class AcpObservationLaneTest {
     }
 
     @Test
+    fun `coalescing never stores an entry past the payload bound`() {
+        // The bound guards what the lane HOLDS, not only what enters it: two chunks each under
+        // the bound can merge into an entry over it, and a merged entry that ignores the bound
+        // is the half-published fact the drop rule refuses to publish in pieces.
+        val lane = lane(capacity = 1)
+        assertTrue(lane.offer(chunk("a".repeat(15_000))))
+        // Full queue: the second chunk could only fit by coalescing into the first, and that
+        // merge would carry ~30k of text past the default bound.
+        assertTrue(
+            !lane.offer(chunk("b".repeat(15_000))),
+            "a merge past the bound was admitted as if it fit",
+        )
+        val stored = lane.poll()
+        assertNotNull(stored)
+        check(stored != null)
+        assertTrue(
+            stored.second.length <= AcpObservationLane.DEFAULT_MAX_FACT_BYTES,
+            "the lane stored an entry bigger than the payload bound: ${stored.second.length}",
+        )
+        val gap = lane.accounting("ex-1")
+        assertEquals(0, gap.coalesced, "a merge refused for exceeding the bound is not a merge")
+        assertEquals(1, gap.lost, "the chunk that could not be merged was lost in silence")
+        assertEquals(1, gap.lostByToken[AcpFactToken.AGENT_MESSAGE_CHUNK])
+    }
+
+    @Test
     fun `the reader never blocks, whatever the publisher is doing`() {
         // The lane is the reader's only contact with publishing, so this is the row that says
         // session/cancel still works during an avalanche: the offer that would have waited is

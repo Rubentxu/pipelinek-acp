@@ -165,7 +165,12 @@ internal class AcpObservationLane(
 
             else -> null
         } ?: return null
-        queue[index] = Entry(merged, codec.encode(merged))
+        // The bound guards the merged entry too: two chunks each under it can merge into one
+        // over it, and that one does not enter. The existing entry stays as it was and the
+        // caller counts the incoming fact as lost — a merge past the bound is a drop, counted.
+        val mergedEncoded = codec.encode(merged)
+        if (mergedEncoded.length > maxFactBytes) return null
+        queue[index] = Entry(merged, mergedEncoded)
         return merged
     }
 
