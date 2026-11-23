@@ -210,7 +210,19 @@ object AcpReactiveStepDefinition :
         compiled: AcpPlanCompilation.Compiled,
         publisher: AcpUpdateSink,
     ): AcpReactiveOutput {
-        val runner = AcpReactionRunner(slot, compiled.reactions)
+        // PKH-138: the turn runs its reactions over the durable ledger. The nonce is THIS
+        // connection's persisted key half — it leaves in every row's EventKey, so a recovered
+        // or reconnected run can tell its own counters from a foreign connection's. The sink
+        // collects in-run; the rows themselves become durable through the step output, which
+        // is the journal — no second authority is opened here.
+        val connectionNonce = java.util.UUID.randomUUID().toString()
+        val ledger = AcpReactionLedger()
+        val runner = AcpReactionRunner(
+            slot,
+            compiled.reactions,
+            connectionNonce = connectionNonce,
+            journal = ledger,
+        )
         val awaitVerdicts = arrayOfNulls<AcpAwaitVerdict>(compiled.awaits.size)
         val exchange = coroutineScope {
             runner.start(this)
@@ -261,6 +273,7 @@ object AcpReactiveStepDefinition :
                 reactions = runner.invocations.size,
                 reactionSummary = summaries,
                 awaitVerdicts = verdicts,
+                reactionLedger = runner.journalRows,
             )
             is AcpExchange.Refused -> AcpReactiveOutput(
                 ok = false,
@@ -269,6 +282,7 @@ object AcpReactiveStepDefinition :
                 reactions = runner.invocations.size,
                 reactionSummary = summaries,
                 awaitVerdicts = verdicts,
+                reactionLedger = runner.journalRows,
             )
         }
     }
@@ -334,6 +348,9 @@ object AcpReactiveStepDefinition :
  * ran. [reactionSummary] breaks that trace down per declared reaction — including the
  * [AcpReactionSummary.skipped] later matches of a `once` reaction, so a skip is an OBSERVED
  * outcome, not silence — and [awaitVerdicts] answers each declared await in declaration order.
+ * [reactionLedger] is the PKH-138 reconciliation evidence: the intent/ack rows the runner
+ * wrote, keyed by [EventKey], persisted HERE in the step's own journal output — a recovered run
+ * reads these rows back and never re-fires an effect whose outcome the journal cannot prove.
  */
 @kotlinx.serialization.Serializable
 data class AcpReactiveOutput(
@@ -349,6 +366,8 @@ data class AcpReactiveOutput(
     val reactionSummary: List<AcpReactionSummary> = emptyList(),
     /** One verdict per declared await, in declaration order. */
     val awaitVerdicts: List<AcpAwaitVerdict> = emptyList(),
+    /** Durable intent/ack rows of this turn's dispatches, in write order (PKH-138 AC#3). */
+    val reactionLedger: List<AcpReactionLedgerRow> = emptyList(),
 )
 
 /** The trace one declared reaction left in the turn. */
