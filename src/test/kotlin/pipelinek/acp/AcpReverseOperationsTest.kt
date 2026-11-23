@@ -66,6 +66,62 @@ class AcpReverseOperationsTest {
     private fun option(id: String, kind: PermissionOptionKind) =
         PermissionOption(PermissionOptionId(id), id, kind, null)
 
+    /** The seam's acceptance log, enough for the notification-routing rows below. */
+    private class ListingEmission : dev.rubentxu.pipeline.v2.events.registry.PluginEventEmission {
+        val payloads = mutableListOf<Any?>()
+        override fun <P : Any> emit(
+            kind: String,
+            payload: P,
+        ): dev.rubentxu.pipeline.v2.events.registry.EmissionOutcome {
+            payloads.add(payload)
+            return dev.rubentxu.pipeline.v2.events.registry.EmissionOutcome.Emitted(
+                dev.rubentxu.pipeline.v2.events.PluginEventEmitted(
+                    eventId = "evt-rev",
+                    runId = "run-rev",
+                    sequence = 1L,
+                    occurredAt = java.time.Instant.EPOCH,
+                    registryKind = kind,
+                    schemaVersion = AcpObservationCodec.SCHEMA_VERSION,
+                    payload = AcpObservationCodec.encode(payload as AcpObservation),
+                    emittedBy = AcpPluginDeclaration.CONTRIBUTOR_ID,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `a notification outside the prompt stream reaches the observation lane and keeps its journal row`() {
+        // What the SDK routes to notify (no prompt in flight) is still an update the agent
+        // sent: dropping it here means the run's stream says the agent was silent. The
+        // journalizado of the reverse leg must survive the forwarding, unchanged.
+        val root = Files.createTempDirectory("acp-rev-notify-")
+        val emission = ListingEmission()
+        val publisher = AcpObservationPublisher(emission) { "run-rev-0" }
+        val journal = AcpReverseJournal()
+        val ops = AcpReverseOperations(
+            session, root, AcpTaskProfile.READONLY, null, journal, AcpPermissionLedger(),
+            observer = publisher,
+        )
+        runBlocking {
+            ops.notify(
+                SessionUpdate.AgentThoughtChunk(
+                    com.agentclientprotocol.model.ContentBlock.Text("thought outside the prompt"),
+                ),
+                null,
+            )
+            ops.notify(toolCall(ToolKind.READ, id = "tc-n").copy(status = com.agentclientprotocol.model.ToolCallStatus.COMPLETED), null)
+        }
+        publisher.drain()
+
+        val tokens = emission.payloads.filterIsInstance<AcpObservation>().map { it.token }
+        assertTrue(AcpFactToken.AGENT_THOUGHT_CHUNK in tokens, "the thought vanished: $tokens")
+        assertTrue(AcpFactToken.TOOL_CALL_CHANGED in tokens, "the tool-call notification vanished: $tokens")
+        assertTrue(
+            journal.snapshot().any { it.startsWith("tool agent tool") },
+            "forwarding must not drop the journal row: ${journal.snapshot()}",
+        )
+    }
+
     // ---------------------------------------------------------------- permissions AC#1
 
     @Test

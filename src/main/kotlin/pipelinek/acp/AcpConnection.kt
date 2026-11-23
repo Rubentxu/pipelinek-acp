@@ -255,7 +255,7 @@ class AcpConnection(private val pluginVersion: String) {
                     cwd = cwd.ifEmpty { System.getProperty("user.dir") },
                     mcpServers = emptyList(),
                 ),
-                operationsFactory = reverse?.factory()
+                operationsFactory = reverse?.factory(observation)
                     ?: ClientOperationsFactory { _, _ -> ObservingOperations(observation) },
             )
             val reply = StringBuilder()
