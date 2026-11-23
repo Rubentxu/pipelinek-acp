@@ -23,10 +23,15 @@ cd "$(dirname "$0")/.."
 acp_use_host "$(acp_sdk_version)"
 JAR="$PWD/build/libs/pipelinek-acp-0.1.0-operator.jar"
 receipts="${PKH143_RECEIPTS:-/var/tmp/pkh143-recibos}"
-state="build/pkh143-examples/05-socket"
+state="$PWD/build/pkh143-examples/05-socket"
 mkdir -p "$receipts"
 rm -rf "$state"; mkdir -p "$state/scripts"
-rm -f "$state"/*.sqlite* "$state/service.sock"
+# El alambre Unix cabe en sun_path (<=108 chars) y su directorio debe ser privado:
+# el socket vive en /tmp con casa propia, no bajo el arbol largo del worktree.
+sock_dir="/tmp/pkh143-05-$$"
+rm -rf "$sock_dir"; mkdir -p "$sock_dir"; chmod 700 "$sock_dir"
+SOCK="$sock_dir/service.sock"
+rm -f "$state"/*.sqlite*
 
 LOG="$receipts/ac3-socket.log"
 : > "$LOG"
@@ -36,7 +41,7 @@ cleanup() {
   [ -n "$RUN_PID" ] && kill "$RUN_PID" 2>/dev/null || true
   [ -n "$SERVE_PID" ] && kill "$SERVE_PID" 2>/dev/null || true
   wait 2>/dev/null || true
-  rm -f "$state/service.sock"
+  rm -rf "$sock_dir" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -66,42 +71,52 @@ pipeline {
     stages {
         stage("long sleep for the supervised cancel") {
             timeout(time = 5, unit = "MINUTES") {
-                sh("sleep", "120")
+                sh("sleep 120")
             }
         }
     }
 }
 KTS
 
+# El servicio LEE el sustrato, no lo crea: hay que prepararlo antes de servir.
+pipelinek substrate init --db "$state/run.sqlite" >> "$state/substrate-init.log" 2>&1
+
+# Autorizaciones del operador, como en examples/socket-observe: un token nuestro, con los
+# derechos que la fila necesita (leer estado, listar permisos, responder, cancelar). El
+# servicio no genera un fichero que nadie busca: el contrato del socket es este argv.
+auth_file="$sock_dir/authorizations"
+token="pkh143-actor-$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+printf '%s pipelinek-actor all+start+cancel+answer\n' "$token" > "$auth_file"
+chmod 600 "$auth_file"
+
+pipelinek serve --db "$state/run.sqlite" --control-root "$state/control" \
+  --socket "$SOCK" --trust-profile trusted-local --authorization-file "$auth_file" \
+  --scripts "$state/scripts" --workspaces "$(dirname "$PWD")" \
+  > "$state/serve.log" 2>&1 &
+SERVE_PID=$!
+
+# --- readiness: el socket existe cuando el servicio escucha.
+for _ in $(seq 1 30); do
+  [ -S "$SOCK" ] && break
+  sleep 1
+done
+test -S "$SOCK" || { echo "el servicio no levanto el socket" | tee -a "$LOG"; exit 1; }
+
+# --- el run del ejemplo, lento, CON EL SERVICIO YA ARRIBA para poder observarlo vivo.
 pipelinek run --workspace "$PWD" \
   --db "$state/run.sqlite" --control-root "$state/control" \
   --plugin-jar "$JAR" \
   "$state/slow-session.pipeline.kts" > "$state/run.log" 2>&1 &
 RUN_PID=$!
+{ echo "== serve.log (arranque) =="; head -20 "$state/serve.log"; echo "authorization_file=$auth_file"; } >> "$LOG"
 
-pipelinek serve --db "$state/run.sqlite" --control-root "$state/control" \
-  --socket "$state/service.sock" --trust-profile trusted-local \
-  --scripts "$state/scripts" --workspaces "$PWD" \
-  > "$state/serve.log" 2>&1 &
-SERVE_PID=$!
-
-# --- readiness + token: el servicio dice donde esta la autorizacion en su arranque.
-token=""
-for _ in $(seq 1 30); do
-  [ -S "$state/service.sock" ] && break
-  sleep 1
-done
-test -S "$state/service.sock" || { echo "el servicio no levanto el socket" | tee -a "$LOG"; exit 1; }
-token_file="$(find "$state" "$state/control" -maxdepth 2 -name '*token*' -type f 2>/dev/null | head -1 || true)"
-[ -n "$token_file" ] && token="$(cat "$token_file")"
-{ echo "== serve.log (arranque) =="; head -20 "$state/serve.log"; echo "token_file=${token_file:-ninguno}"; } >> "$LOG"
-
-probe() { python3 -I examples/socket-client/service_socket_probe.py --socket "$state/service.sock" ${token:+--token "$token"} "$@"; }
+probe() { python3 -I examples/socket-client/service_socket_probe.py --socket "$SOCK" ${token:+--token "$token"} "$@"; }
 
 { echo "== version/health =="; probe version; } >> "$LOG"
 
 # --- runId del run vivo: el log del CLI lo nombra; fallback: el journal.
-run_id="$(grep -oE '[0-9a-f]{8}-[0-9a-f-]{20,}' "$state/run.log" | head -1 || true)"
+for _ in $(seq 1 10); do grep -q '"runId"' "$state/run.log" 2>/dev/null && break; sleep 1; done
+run_id="$(grep -oE '"runId":"[0-9a-f-]+"' "$state/run.log" | head -1 | sed -E 's/.*: *"([^"]+)"/\1/' || true)"
 if [ -z "$run_id" ]; then
   run_id="$(python3 -I -c "
 import sqlite3, sys
@@ -119,7 +134,7 @@ fi
 echo "runId observado: ${run_id:-DETECTADO-POR-LOG-VACIO}" | tee -a "$LOG"
 
 if [ -n "$run_id" ]; then
-  { echo "== observe (ESTADO/PERMISO/EVENTOS/RESULTADO del run vivo) =="; probe observe "$run_id"; } >> "$LOG"
+  { echo "== peek en vivo (ESTADO+PERMISO mientras el dueno tiene el lease) =="; probe peek "$run_id"; } >> "$LOG"
   { echo "== cancel del run vivo por el socket =="; probe cancel "$run_id" "pkh-143 socket client"; } >> "$LOG"
 fi
 # El run del ejemplo termina solo (turno lento ~20 s): su RESULTADO final.
@@ -133,6 +148,7 @@ fi
 { echo "== start supervisado (sleepy, host-only: el servicio no puede nominar el plugin jar) =="
   probe start sleepy.pipeline.kts "$PWD"
 } >> "$LOG"
+sleep 2
 supervised_id="$(grep -oE '\{"lane": "start".*' "$LOG" | grep -oE '[0-9a-f]{8}-[0-9a-f-]{20,}' | head -1 || true)"
 if [ -n "$supervised_id" ]; then
   { echo "== cancel supervisado =="; probe cancel "$supervised_id" "pkh-143 cancel lane";

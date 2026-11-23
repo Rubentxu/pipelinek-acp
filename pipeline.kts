@@ -91,5 +91,28 @@ pipeline {
                 sh("scripts/e2e-acp-authority.sh")
             }
         }
+        stage("e2e published examples") {
+            // PKH-143's row, in scripts/e2e-examples.sh: every example under examples/ runs
+            // for real against the installed host with the operator jar — the read-only
+            // review, the two goldfish reviewers, the gateway law showcase, the bounded
+            // repair, the orchestrator's verification contract, and the raw-socket client
+            // that observes a served run and cancels one. Admission is measured on the way:
+            // a host that refuses the artifact cannot run a single row.
+            timeout(time = 30, unit = "MINUTES") {
+                sh("scripts/e2e-examples.sh")
+            }
+        }
+        stage("e2e socket observation") {
+            // PKH-143's AC#3 row, in scripts/e2e-socket-observe.sh: the installed host SERVES
+            // a run of the example (substrate prepared first, socket under a private /tmp dir
+            // so the sun_path limit holds) while a raw client reads its state, the PERMISSION
+            // street, its events and its RESULT over `pipelinek.service/2`, and cancels one —
+            // both lanes: the external CLI run (whose refusal is evidence, not failure) and
+            // the service-supervised run.start (which must end CANCELLED). The receipt lands
+            // in PKH143_RECEIPTS (default /var/tmp/pkh143-recibos/ac3-socket.log).
+            timeout(time = 20, unit = "MINUTES") {
+                sh("scripts/e2e-socket-observe.sh")
+            }
+        }
     }
 }

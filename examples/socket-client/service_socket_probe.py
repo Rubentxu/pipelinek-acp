@@ -41,10 +41,15 @@ class Wire:
         self.path = path
         self.token = token
 
-    def ask(self, request, max_lines=200):
-        """Una pregunta por conexion (la regla del alambre) y sus lineas."""
+    def ask(self, request, max_lines=200, timeout=30.0):
+        """Una pregunta por conexion (la regla del alambre) y sus lineas.
+
+        Las calles follow viven hasta que el servicio dice "end" o el run acaba;
+        un silencio mas largo que el presupuesto del cliente es el final honesto
+        de la lectura, no un error: se devuelve lo que ya hay.
+        """
         lines = []
-        client = connect(self.path)
+        client = connect(self.path, timeout=timeout)
         try:
             doc = {"schema": SCHEMA, **request}
             if self.token:
@@ -52,7 +57,10 @@ class Wire:
             client.sendall((json.dumps(doc) + "\n").encode())
             buffer = b""
             while len(lines) < max_lines:
-                chunk = client.recv(65536)
+                try:
+                    chunk = client.recv(65536)
+                except TimeoutError:
+                    break
                 if not chunk:
                     break
                 buffer += chunk
@@ -83,13 +91,17 @@ def main():
     if opts.mode == "version":
         emit("version", wire.ask({"op": "version"}))
         emit("health", wire.ask({"op": "health"}))
+    elif opts.mode == "peek":
+        # Solo las calles decisivas mientras el run vive: ESTADO y PERMISO.
+        run_id = opts.args[0]
+        emit("state", wire.ask({"op": "run.state", "runId": run_id}))
+        emit("inputs", wire.ask({"op": "inputs.list", "runId": run_id}))
     elif opts.mode == "observe":
         run_id = opts.args[0]
         emit("state", wire.ask({"op": "run.state", "runId": run_id}))
         emit("inputs", wire.ask({"op": "inputs.list", "runId": run_id}))
         emit("events", wire.ask({"op": "events.follow", "runId": run_id}, max_lines=80))
-        emit("output", wire.ask({"op": "output.follow", "runId": run_id, "after": "-1"},
-                                max_lines=80))
+        emit("output", wire.ask({"op": "output.follow", "runId": run_id}, max_lines=80))
     elif opts.mode == "cancel":
         run_id = opts.args[0]
         reason = opts.args[1] if len(opts.args) > 1 else "pkh-143 socket client"
