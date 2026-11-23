@@ -58,10 +58,19 @@ object AcpHandshake {
      * embeds an image into an agent that answered `image = false` is a prompt the agent will
      * fail for a reason the reader cannot see from the outside. Checking here means the refusal
      * names the capability, not the agent.
+     *
+     * [needsMcpHttp] is PKH-139's gate: a session MCP gateway is only offered over the http MCP
+     * transport the agent announced. An agent without it is refused with
+     * [AcpRefusal.SessionCapabilityMissing] — the same token the composed-session gate uses —
+     * so the step output distinguishes "this agent cannot host session tools" from a plan or
+     * transport failure, and no generic call surface is ever handed to it.
      */
-    fun refusal(agent: AgentInfo, needsImage: Boolean): AcpRefusal? {
+    fun refusal(agent: AgentInfo, needsImage: Boolean, needsMcpHttp: Boolean = false): AcpRefusal? {
         if (needsImage && !agent.capabilities.promptCapabilities.image) {
             return AcpRefusal.MissingCapability("image")
+        }
+        if (needsMcpHttp && !agent.capabilities.mcpCapabilities.http) {
+            return AcpRefusal.SessionCapabilityMissing("mcp http")
         }
         return null
     }

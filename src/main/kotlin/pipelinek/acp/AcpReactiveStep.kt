@@ -180,15 +180,38 @@ object AcpReactiveStepDefinition :
                 detail = compiled.reasons.joinToString("; "),
             )
             is AcpPlanCompilation.Compiled -> {
-                val decisions: InputDecisions =
-                    context.capabilities.get(INPUT_DECISIONS_CAPABILITY, InputDecisions::class)
-                val emission: PluginEventEmission =
-                    context.capabilities.get(PLUGIN_EVENT_EMISSION_CAPABILITY, PluginEventEmission::class)
-                withObservationPublisher(
-                    emission,
-                    AcpObservationPublisher.exchangeRefOf(context),
-                ) { publisher ->
-                    runReactiveTurn(input, slot, decisions, compiled, publisher)
+                // PKH-139: the exposed tools compile against the ADDRESSES the reaction half
+                // already claimed — one body child, one dispatcher. A tool stealing a
+                // reaction's name is refused here, where nothing has launched and every
+                // problem can still be named at once.
+                val reactionAddresses = compiled.reactions.map { it.id }.toSet()
+                when (val tools = compileAcpToolPlan(input.exposedTools, reactionAddresses)) {
+                    is AcpToolPlanCompilation.Rejected -> AcpReactiveOutput(
+                        ok = false,
+                        failureKind = PLAN_REJECTED,
+                        detail = tools.reasons.joinToString("; "),
+                    )
+                    is AcpToolPlanCompilation.Compiled -> {
+                        val decisions: InputDecisions =
+                            context.capabilities.get(INPUT_DECISIONS_CAPABILITY, InputDecisions::class)
+                        val emission: PluginEventEmission =
+                            context.capabilities.get(PLUGIN_EVENT_EMISSION_CAPABILITY, PluginEventEmission::class)
+                        withObservationPublisher(
+                            emission,
+                            AcpObservationPublisher.exchangeRefOf(context),
+                        ) { publisher ->
+                            runReactiveTurn(
+                                input,
+                                slot,
+                                decisions,
+                                compiled,
+                                tools.tools,
+                                publisher,
+                                context.runId.value,
+                                "step-${context.stepIndex}",
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -196,19 +219,29 @@ object AcpReactiveStepDefinition :
 
     /**
      * Drive one reactive turn: the runner takes the events the reader receives, the awaits
-     * observe the same stream, and the output says what each of them did.
+     * observe the same stream, the exposed tools answer calls through the session MCP gateway,
+     * and the output says what each of them did.
      *
      * The reader hands updates to [AcpReactionRunner.submit] and never waits for a body (the
      * deadlock law of AC#4); the awaits run as children of the turn's scope, and when the turn
      * ends their remaining budget is cut short — no event can arrive after the session closes,
      * so a still-pending await reports [AcpAwaitVerdict.TimedOut], never a lie.
+     *
+     * PKH-139: the gateway is minted FROM the compiled plan and dies in this turn's finally —
+     * it cannot outlive the session that was handed its URL (AC#2's expiry). It dispatches
+     * through the same [BodySlotInvoker] seam and the same [AcpReactionLedger] the reactions
+     * drive, so a tool call is one more slot request the engine journals, never a second
+     * executor, and the reader thread is never blocked by a tool body (AC#4).
      */
     private suspend fun runReactiveTurn(
         input: AcpReactiveInput,
         slot: BodySlotInvoker,
         decisions: InputDecisions,
         compiled: AcpPlanCompilation.Compiled,
+        compiledTools: List<AcpCompiledTool>,
         publisher: AcpUpdateSink,
+        runId: String,
+        operationId: String,
     ): AcpReactiveOutput {
         // PKH-138: the turn runs its reactions over the durable ledger. The nonce is THIS
         // connection's persisted key half — it leaves in every row's EventKey, so a recovered
@@ -217,6 +250,9 @@ object AcpReactiveStepDefinition :
         // is the journal — no second authority is opened here.
         val connectionNonce = java.util.UUID.randomUUID().toString()
         val ledger = AcpReactionLedger()
+        // PKH-139: no compiled tool opens no gateway — the generic surface AC#5 refuses does
+        // not exist by construction, and the session travels with empty mcpServers as always.
+        val gateway = AcpMcpGateway.start(compiledTools, slot, ledger, runId, operationId)
         val runner = AcpReactionRunner(
             slot,
             compiled.reactions,
@@ -250,8 +286,14 @@ object AcpReactiveStepDefinition :
                         reverse,
                         AcpReaction { runner.submit(it) },
                         observation = publisher,
+                        sessionMcpServers = listOfNotNull(gateway?.descriptor()),
+                        needsMcpHttp = gateway != null,
                     )
             } finally {
+                // AC#2/AC#4's expiry: the gateway stops serving BEFORE the turn's bookkeeping
+                // ends, so a call racing the turn's last moment is refused, never executed
+                // against a session that no longer exists.
+                gateway?.close()
                 runner.finish()
                 awaitJobs.forEach { it.cancel() }
                 awaitJobs.forEach { it.join() }
@@ -265,6 +307,8 @@ object AcpReactiveStepDefinition :
                 skipped = runner.skipped.filter { it.reactionId == reaction.id }.map { it.eventCursor },
             )
         }
+        val toolCalls = gateway?.callRecords() ?: emptyList()
+        val gatewayUrl = gateway?.url ?: ""
         return when (exchange) {
             is AcpExchange.Completed -> AcpReactiveOutput(
                 ok = true,
@@ -274,6 +318,8 @@ object AcpReactiveStepDefinition :
                 reactionSummary = summaries,
                 awaitVerdicts = verdicts,
                 reactionLedger = runner.journalRows,
+                exposedToolCalls = toolCalls,
+                mcpGatewayUrl = gatewayUrl,
             )
             is AcpExchange.Refused -> AcpReactiveOutput(
                 ok = false,
@@ -283,6 +329,8 @@ object AcpReactiveStepDefinition :
                 reactionSummary = summaries,
                 awaitVerdicts = verdicts,
                 reactionLedger = runner.journalRows,
+                exposedToolCalls = toolCalls,
+                mcpGatewayUrl = gatewayUrl,
             )
         }
     }
@@ -368,6 +416,19 @@ data class AcpReactiveOutput(
     val awaitVerdicts: List<AcpAwaitVerdict> = emptyList(),
     /** Durable intent/ack rows of this turn's dispatches, in write order (PKH-138 AC#3). */
     val reactionLedger: List<AcpReactionLedgerRow> = emptyList(),
+    /**
+     * Every call the session MCP gateway answered this turn, allowed or refused (PKH-139).
+     * Empty when the plan exposed no tools — the gateway is minted per turn and dies with it,
+     * so this list is the whole of what the agent could do through it.
+     */
+    val exposedToolCalls: List<AcpToolCallRecord> = emptyList(),
+    /**
+     * The loopback URL the gateway served while the turn ran ("" when there was no gateway).
+     * It is DEAD data once the turn ends — the server is stopped in the turn's finally — and
+     * tests measure AC#2's expiry and AC#5's refusal against exactly that: connecting here
+     * after the output exists must fail.
+     */
+    val mcpGatewayUrl: String = "",
 )
 
 /** The trace one declared reaction left in the turn. */
@@ -471,4 +532,10 @@ data class AcpReactiveInput(
     val reactions: List<AcpReactionDeclaration> = emptyList(),
     /** `await(condition, timeout)` declarations, answered in this order. */
     val awaits: List<AcpAwaitDeclaration> = emptyList(),
+    /**
+     * PKH-139: steps the plan authorises the agent to CALL as session tools. They compile to
+     * static slot addresses (see [compileAcpToolPlan]) and are offered through a temporary MCP
+     * gateway; a tool name colliding with a reaction is rejected before the agent launches.
+     */
+    val exposedTools: List<AcpExposedToolDeclaration> = emptyList(),
 )

@@ -291,6 +291,11 @@ fun StageScope.acpSession(
  * and a body the author filled with arbitrary steps would leave the plugin unable to name the
  * children it has to dispatch. [awaits] declare observation, not dispatch: they answer in the
  * turn's output, in order.
+ *
+ * [exposedTools] (PKH-139) declare the steps the agent may CALL as session MCP tools. They are
+ * body children too — the lowering names a slot for each — so a tool travels the same seam as a
+ * reaction: static address, engine journalled, no arbitrary execution. A tool that steals a
+ * reaction's name is refused by the plan compiler before the agent launches.
  */
 fun <B : StepEmitter<B>> StepEmitter<B>.acpReactive(
     command: List<String>,
@@ -299,6 +304,7 @@ fun <B : StepEmitter<B>> StepEmitter<B>.acpReactive(
     timeoutSeconds: Long = 300,
     reactions: List<AcpReactionDeclaration> = emptyList(),
     awaits: List<AcpAwaitDeclaration> = emptyList(),
+    exposedTools: List<AcpExposedToolDeclaration> = emptyList(),
 ) {
     registryBlock(
         stepKey = AcpReactiveStepDefinition.KEY,
@@ -310,23 +316,36 @@ fun <B : StepEmitter<B>> StepEmitter<B>.acpReactive(
                 timeoutSeconds = timeoutSeconds,
                 reactions = reactions,
                 awaits = awaits,
+                exposedTools = exposedTools,
             ),
         ),
     ) {
         val reactionInput = AcpReactionStepDefinition.InputCodec.encode(AcpReactionInput())
-        if (reactions.isEmpty()) {
+        // One child per NAME the turn will dispatch under: the reactions' ids first, then the
+        // exposed tools' — a set, because a collision must not mint two children with one
+        // address; the compiler rejects that collision, and here it only refuses to duplicate
+        // the slot.
+        val slotNames = LinkedHashSet<String>()
+        reactions.forEach { if (it.id.isNotBlank()) slotNames.add(it.id) }
+        exposedTools.forEach { if (it.id.isNotBlank()) slotNames.add(it.id) }
+        if (reactions.isEmpty() && slotNames.isEmpty()) {
             registryStep(AcpReactionStepDefinition.KEY, reactionInput)
         } else {
+            if (reactions.isEmpty()) {
+                // A default reaction plan keeps its unnamed child even beside tool slots:
+                // "the plan says nothing about routing" must not silently lose the update hook.
+                registryStep(AcpReactionStepDefinition.KEY, reactionInput)
+            }
             // Naming a child is the body scope's own verb; an emitter without it cannot host
-            // declared reactions — say so at composition, not as a silent collapse to one slot.
+            // declared reactions or tools — say so at composition, not as a silent collapse.
             val namer = this as? StepBodyScopeWrappers
                 ?: error(
-                    "acpReactive with declared reactions needs a scope that can name body " +
-                        "children (the StageScope/StepBodyScope route); ${this::class.simpleName} cannot",
+                    "acpReactive with declared reactions or exposed tools needs a scope that " +
+                        "can name body children (the StageScope/StepBodyScope route); " +
+                        "${this::class.simpleName} cannot",
                 )
-            for (declaration in reactions) {
-                if (declaration.id.isBlank()) continue // the compiler refuses it; emit no child for it
-                namer.slot(declaration.id) {
+            for (name in slotNames) {
+                namer.slot(name) {
                     registryStep(AcpReactionStepDefinition.KEY, reactionInput)
                 }
             }
@@ -342,9 +361,10 @@ fun StageScope.acpReactive(
     timeoutSeconds: Long = 300,
     reactions: List<AcpReactionDeclaration> = emptyList(),
     awaits: List<AcpAwaitDeclaration> = emptyList(),
+    exposedTools: List<AcpExposedToolDeclaration> = emptyList(),
 ) {
     val emitter: StepEmitter<StepBodyScope> = this
-    emitter.acpReactive(command, prompt, cwd, timeoutSeconds, reactions, awaits)
+    emitter.acpReactive(command, prompt, cwd, timeoutSeconds, reactions, awaits, exposedTools)
 }
 
 /**

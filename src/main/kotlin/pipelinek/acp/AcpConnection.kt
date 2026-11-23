@@ -60,6 +60,11 @@ class AcpConnection(private val pluginVersion: String) {
         reverse: AcpReverseSession? = null,
         reaction: AcpReaction? = null,
         observation: AcpUpdateSink? = null,
+        // PKH-139: the session's MCP servers, handed to session/new as declared data, and the
+        // capability the gateway's transport needs. Empty/false keeps every shipped exchange
+        // verbatim: no servers advertised, no http gate.
+        sessionMcpServers: List<AcpMcpInput> = emptyList(),
+        needsMcpHttp: Boolean = false,
     ): AcpExchange {
         val process = try {
             AcpAgentProcess.open(input.command)
@@ -79,6 +84,8 @@ class AcpConnection(private val pluginVersion: String) {
                     reverse = reverse,
                     reaction = reaction,
                     observation = observation,
+                    sessionMcpServers = sessionMcpServers,
+                    needsMcpHttp = needsMcpHttp,
                 )
             }
         } catch (e: TimeoutCancellationException) {
@@ -249,6 +256,8 @@ class AcpConnection(private val pluginVersion: String) {
         reverse: AcpReverseSession?,
         reaction: AcpReaction? = null,
         observation: AcpUpdateSink? = null,
+        sessionMcpServers: List<AcpMcpInput> = emptyList(),
+        needsMcpHttp: Boolean = false,
     ): AcpExchange {
         val transport = StdioTransport(
             parentScope = scope,
@@ -265,13 +274,17 @@ class AcpConnection(private val pluginVersion: String) {
                 if (reverse != null) AcpHandshake.clientInfo(pluginVersion, reverse)
                 else AcpHandshake.clientInfo(pluginVersion),
             )
-            AcpHandshake.refusal(agentInfo, needsImage = false)?.let {
+            // PKH-139 AC#5: a gateway needs the http MCP transport, and the gate is the
+            // NEGOTIATED capability, not a hope: an agent that did not announce
+            // `mcpCapabilities.http` is refused before its session is created, so the
+            // generic-call surface never exists against it.
+            AcpHandshake.refusal(agentInfo, needsImage = false, needsMcpHttp = needsMcpHttp)?.let {
                 return observation.refuseWith(it)
             }
             val session = client.newSession(
                 sessionParameters = SessionCreationParameters(
                     cwd = cwd.ifEmpty { System.getProperty("user.dir") },
-                    mcpServers = emptyList(),
+                    mcpServers = sessionMcpServers.map { it.toWire() },
                 ),
                 operationsFactory = reverse?.factory(observation)
                     ?: ClientOperationsFactory { _, _ -> ObservingOperations(observation) },
