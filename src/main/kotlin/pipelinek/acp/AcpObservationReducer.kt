@@ -110,24 +110,26 @@ internal class AcpObservationReducer(private val exchangeRef: () -> String) {
                 emptyList()
             } else {
                 toolCalls[observation.toolCallId] = merged
+                val changed = observation.copy(
+                    title = merged.title,
+                    status = merged.status,
+                    toolKind = merged.toolKind,
+                )
                 if (isTerminal(merged.status) && previous?.completed != true) {
                     completions++
-                    listOf(
-                        AcpObservation.ToolCallCompleted(
-                            exchangeRef = exchangeRef(),
-                            evidence = observation.evidence,
-                            toolCallId = merged.toolCallId,
-                            status = merged.status,
-                        ),
-                    )
+                    // Both facts, in the order the state moved: the change carries what the call
+                    // IS now and the completion says the call will not move again. Publishing
+                    // only the completion would leave the stream unable to reproduce this state
+                    // on replay — the reader would see a call that ended without ever knowing
+                    // what it was.
+                    listOf(changed, AcpObservation.ToolCallCompleted(
+                        exchangeRef = exchangeRef(),
+                        evidence = observation.evidence,
+                        toolCallId = merged.toolCallId,
+                        status = merged.status,
+                    ))
                 } else {
-                    listOf(
-                        observation.copy(
-                            title = merged.title,
-                            status = merged.status,
-                            toolKind = merged.toolKind,
-                        ),
-                    )
+                    listOf(changed)
                 }
             }
         }

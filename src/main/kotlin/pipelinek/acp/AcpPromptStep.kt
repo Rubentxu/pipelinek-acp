@@ -10,6 +10,8 @@ import dev.rubentxu.pipeline.v2.domain.step.StepCodec
 import dev.rubentxu.pipeline.v2.domain.step.StepContract
 import dev.rubentxu.pipeline.v2.domain.step.StepDefinition
 import dev.rubentxu.pipeline.v2.domain.step.StepHandler
+import dev.rubentxu.pipeline.v2.events.registry.PLUGIN_EVENT_EMISSION_CAPABILITY
+import dev.rubentxu.pipeline.v2.events.registry.PluginEventEmission
 import kotlinx.serialization.json.Json
 
 /**
@@ -71,22 +73,36 @@ object AcpPromptStepDefinition : StepDefinition<AcpPromptInput, AcpPromptOutput>
             ),
             inputCodec = InputCodec,
             outputCodec = OutputCodec,
-            requiredCapabilities = emptySet(),
+            // The step publishes what it observed, so it asks for the published emission seam.
+            // Declaring it is what makes admission fail-closed: a host that does not bind the
+            // seam refuses the step instead of running an exchange whose observation vanishes.
+            requiredCapabilities = setOf(PLUGIN_EVENT_EMISSION_CAPABILITY),
         )
     }
 
-    override val handler = StepHandler<AcpPromptInput, AcpPromptOutput> { input, _ ->
+    override val handler = StepHandler<AcpPromptInput, AcpPromptOutput> { input, context ->
         // suspend all the way: the agent I/O runs on the connection's own IO scope, never
         // parking an engine thread in a blocking run.
-        when (val exchange = AcpConnection(AcpPluginDeclaration.declaredVersion()).exchange(input)) {
-            is AcpExchange.Completed ->
-                AcpPromptOutput(ok = true, reply = exchange.reply, stopReason = exchange.stopReason)
-            is AcpExchange.Refused ->
-                AcpPromptOutput(
-                    ok = false,
-                    failureKind = exchange.refusal.kindToken,
-                    detail = exchange.refusal.detail,
-                )
+        val emission: PluginEventEmission =
+            context.capabilities.get(PLUGIN_EVENT_EMISSION_CAPABILITY, PluginEventEmission::class)
+        val output = withObservationPublisher(
+            emission,
+            AcpObservationPublisher.exchangeRefOf(context),
+        ) { publisher ->
+            when (
+                val exchange = AcpConnection(AcpPluginDeclaration.declaredVersion())
+                    .exchange(input, observation = publisher)
+            ) {
+                is AcpExchange.Completed ->
+                    AcpPromptOutput(ok = true, reply = exchange.reply, stopReason = exchange.stopReason)
+                is AcpExchange.Refused ->
+                    AcpPromptOutput(
+                        ok = false,
+                        failureKind = exchange.refusal.kindToken,
+                        detail = exchange.refusal.detail,
+                    )
+            }
         }
+        output
     }
 }

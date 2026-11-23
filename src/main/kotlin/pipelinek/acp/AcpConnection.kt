@@ -59,6 +59,7 @@ class AcpConnection(private val pluginVersion: String) {
         input: AcpPromptInput,
         reverse: AcpReverseSession? = null,
         reaction: AcpReaction? = null,
+        observation: AcpUpdateSink? = null,
     ): AcpExchange {
         val process = try {
             AcpAgentProcess.open(input.command)
@@ -77,6 +78,7 @@ class AcpConnection(private val pluginVersion: String) {
                     cancelOnUnwind = false,
                     reverse = reverse,
                     reaction = reaction,
+                    observation = observation,
                 )
             }
         } catch (e: TimeoutCancellationException) {
@@ -226,6 +228,7 @@ class AcpConnection(private val pluginVersion: String) {
         cancelOnUnwind: Boolean,
         reverse: AcpReverseSession?,
         reaction: AcpReaction? = null,
+        observation: AcpUpdateSink? = null,
     ): AcpExchange {
         val transport = StdioTransport(
             parentScope = scope,
@@ -251,12 +254,12 @@ class AcpConnection(private val pluginVersion: String) {
                     mcpServers = emptyList(),
                 ),
                 operationsFactory = reverse?.factory()
-                    ?: ClientOperationsFactory { _, _ -> DenyingOperations },
+                    ?: ClientOperationsFactory { _, _ -> ObservingOperations(observation) },
             )
             val reply = StringBuilder()
             var stopReason = ""
             try {
-                promptInto(session, prompt, reply, reaction) { stopReason = it }
+                promptInto(session, prompt, reply, reaction, observation) { stopReason = it }
             } catch (e: CancellationException) {
                 if (cancelOnUnwind) {
                     // AC#1's last clause: the open permission requests get their Cancelled
@@ -298,11 +301,16 @@ class AcpConnection(private val pluginVersion: String) {
         prompt: String,
         reply: StringBuilder,
         reaction: AcpReaction?,
+        observation: AcpUpdateSink? = null,
         onStop: (String) -> Unit,
     ) {
         session.prompt(listOf(ContentBlock.Text(text = prompt))).collect { event ->
             when (event) {
                 is Event.SessionUpdateEvent -> {
+                    // The observation is offered BEFORE the reaction and never waits for it:
+                    // this is the reader's thread, and the lane it hands to is bounded so the
+                    // flood of chunks cannot park the cancellation behind itself.
+                    observation?.accept(event.update)
                     reaction?.react(event.update)
                     (event.update as? SessionUpdate.AgentMessageChunk)?.let { chunk ->
                         (chunk.content as? ContentBlock.Text)?.let { reply.append(it.text) }
@@ -333,5 +341,27 @@ internal object DenyingOperations : ClientSessionOperations {
 
     override suspend fun notify(notification: SessionUpdate, _meta: kotlinx.serialization.json.JsonElement?) {
         // Intentionally empty: event projection is a later task; there is no sink yet.
+    }
+}
+
+/**
+ * The operations of an exchange whose updates are [observation]-projected: the permission
+ * default is unchanged (DENIED — an observation is a report, never a grant), and the reverse
+ * notifications the SDK delivers outside the prompt stream reach the projection instead of
+ * being dropped.
+ *
+ * The sink is offered from the SDK's notification thread and never blocks it: that is the
+ * lane's contract, not this class's.
+ */
+internal class ObservingOperations(private val observation: AcpUpdateSink?) : ClientSessionOperations {
+    override suspend fun requestPermissions(
+        toolCall: SessionUpdate.ToolCallUpdate,
+        permissions: List<PermissionOption>,
+        _meta: kotlinx.serialization.json.JsonElement?,
+    ): RequestPermissionResponse =
+        RequestPermissionResponse(RequestPermissionOutcome.Cancelled)
+
+    override suspend fun notify(notification: SessionUpdate, _meta: kotlinx.serialization.json.JsonElement?) {
+        observation?.accept(notification)
     }
 }
