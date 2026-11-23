@@ -64,7 +64,7 @@ class AcpConnection(private val pluginVersion: String) {
         val process = try {
             AcpAgentProcess.open(input.command)
         } catch (e: AgentLaunchFailed) {
-            return AcpExchange.Refused(e.refusal)
+            return observation.refuseWith(e.refusal)
         }
         val job = SupervisorJob()
         val scope = CoroutineScope(job + Dispatchers.IO)
@@ -82,15 +82,15 @@ class AcpConnection(private val pluginVersion: String) {
                 )
             }
         } catch (e: TimeoutCancellationException) {
-            AcpExchange.Refused(AcpRefusal.AgentTimeout(input.timeoutSeconds))
+            observation.refuseWith(AcpRefusal.AgentTimeout(input.timeoutSeconds))
         } catch (e: UnsupportedProtocolVersionException) {
-            AcpExchange.Refused(AcpHandshake.refusal(e))
+            observation.refuseWith(AcpHandshake.refusal(e))
         } catch (e: JsonRpcException) {
-            AcpExchange.Refused(AcpRefusal.AgentRefusedRequest("acp", "${e.message} (code ${e.code})"))
+            observation.refuseWith(AcpRefusal.AgentRefusedRequest("acp", "${e.message} (code ${e.code})"))
         } catch (e: CancellationException) {
-            refuseUnderCancellationOrRethrow(e, process)
+            refuseUnderCancellationOrRethrow(e, process, observation)
         } catch (e: Exception) {
-            classifyUnexpected(e, process)
+            classifyUnexpected(e, process, observation)
         } finally {
             job.cancel()
             process.destroy()
@@ -121,7 +121,9 @@ class AcpConnection(private val pluginVersion: String) {
         observation: AcpUpdateSink? = null,
     ): AcpExchange {
         val process = AcpAgentProcess.launch(input.command, environment, workingDirectory)
-            .getOrElse { e -> return AcpExchange.Refused(AcpRefusal.AgentUnreachable(e.message ?: e.toString())) }
+            .getOrElse { e ->
+                return observation.refuseWith(AcpRefusal.AgentUnreachable(e.message ?: e.toString()))
+            }
         val job = SupervisorJob()
         val scope = CoroutineScope(job + Dispatchers.IO)
         return try {
@@ -137,16 +139,16 @@ class AcpConnection(private val pluginVersion: String) {
                 )
             }
         } catch (e: TimeoutCancellationException) {
-            AcpExchange.Refused(AcpRefusal.AgentTimeout(input.budgetSeconds))
+            observation.refuseWith(AcpRefusal.AgentTimeout(input.budgetSeconds))
         } catch (e: UnsupportedProtocolVersionException) {
-            AcpExchange.Refused(AcpHandshake.refusal(e))
+            observation.refuseWith(AcpHandshake.refusal(e))
         } catch (e: JsonRpcException) {
-            AcpExchange.Refused(AcpRefusal.AgentRefusedRequest("acp", "${e.message} (code ${e.code})"))
+            observation.refuseWith(AcpRefusal.AgentRefusedRequest("acp", "${e.message} (code ${e.code})"))
         } catch (e: CancellationException) {
             // The engine withdrew the step; session/cancel was said inside the unwinding.
-            refuseUnderCancellationOrRethrow(e, process)
+            refuseUnderCancellationOrRethrow(e, process, observation)
         } catch (e: Exception) {
-            classifyUnexpected(e, process)
+            classifyUnexpected(e, process, observation)
         } finally {
             job.cancel()
             // AC#2: the TREE dies inside the budget. The agent's own children are the
@@ -182,14 +184,16 @@ class AcpConnection(private val pluginVersion: String) {
     }
 
     /** The PKH-132 rule, verbatim: a cancellation from the other side of the pipe is a step
-     * failure; one from the engine is the engine's to answer. */
+     * failure; one from the engine is the engine's to answer. A step failure is also the
+     * stream's: the sink is told it refused before the answer leaves. */
     private suspend fun refuseUnderCancellationOrRethrow(
         e: CancellationException,
         process: AcpAgentProcess,
+        observation: AcpUpdateSink?,
     ): AcpExchange {
         return if (currentCoroutineContext().isActive) {
             val exit = process.exitCodeOrNull()
-            AcpExchange.Refused(
+            observation.refuseWith(
                 if (exit != null) AcpRefusal.AgentExited(exit, process.stderrTail)
                 else AcpRefusal.TransportClosed("the connection ended before the exchange completed"),
             )
@@ -198,13 +202,27 @@ class AcpConnection(private val pluginVersion: String) {
         }
     }
 
-    private fun classifyUnexpected(e: Exception, process: AcpAgentProcess): AcpExchange {
+    private fun classifyUnexpected(
+        e: Exception,
+        process: AcpAgentProcess,
+        observation: AcpUpdateSink?,
+    ): AcpExchange {
         val exit = process.exitCodeOrNull()
         return if (exit != null) {
-            AcpExchange.Refused(AcpRefusal.AgentExited(exit, process.stderrTail))
+            observation.refuseWith(AcpRefusal.AgentExited(exit, process.stderrTail))
         } else {
-            AcpExchange.Refused(AcpRefusal.TransportFailure(e.message ?: e.toString()))
+            observation.refuseWith(AcpRefusal.TransportFailure(e.message ?: e.toString()))
         }
+    }
+
+    /**
+     * A typed refusal is also a lifecycle fact: the stream says the exchange ended refused
+     * and carries the refusal's CLASSIFICATION — the same kindToken the step output answers
+     * with, so the reader branches on the stream without waiting for the journal.
+     */
+    private fun AcpUpdateSink?.refuseWith(refusal: AcpRefusal): AcpExchange {
+        this?.exchangeRefused(refusal.kindToken)
+        return AcpExchange.Refused(refusal)
     }
 
     /**
@@ -248,7 +266,7 @@ class AcpConnection(private val pluginVersion: String) {
                 else AcpHandshake.clientInfo(pluginVersion),
             )
             AcpHandshake.refusal(agentInfo, needsImage = false)?.let {
-                return AcpExchange.Refused(it)
+                return observation.refuseWith(it)
             }
             val session = client.newSession(
                 sessionParameters = SessionCreationParameters(
@@ -258,12 +276,22 @@ class AcpConnection(private val pluginVersion: String) {
                 operationsFactory = reverse?.factory(observation)
                     ?: ClientOperationsFactory { _, _ -> ObservingOperations(observation) },
             )
+            // The exchange EXISTS from here on: what the plugin does next — the prompt, the
+            // cancel, the refusal — are facts about an opened exchange, and the stream has to
+            // be able to tell them apart from a run that never got this far.
+            observation?.exchangeStarted()
             val reply = StringBuilder()
             var stopReason = ""
             try {
                 promptInto(session, prompt, reply, reaction, observation) { stopReason = it }
             } catch (e: CancellationException) {
                 if (cancelOnUnwind) {
+                    // The cancel the stream reports is the one this exchange is about to say:
+                    // the reason classifies WHO ended it — the budget or the engine — because
+                    // the reader cannot tell them apart from the wire.
+                    observation?.exchangeCancelled(
+                        if (e is TimeoutCancellationException) "budget" else "withdrawn",
+                    )
                     // AC#1's last clause: the open permission requests get their Cancelled
                     // answer over the wire first; session/cancel is said only after.
                     reverse?.cancelOutstandingPermissions()
@@ -272,7 +300,7 @@ class AcpConnection(private val pluginVersion: String) {
                 throw e
             }
             if (stopReason.isEmpty()) {
-                return AcpExchange.Refused(
+                return observation.refuseWith(
                     AcpRefusal.TransportClosed("the prompt stream ended without a response"),
                 )
             }
@@ -280,6 +308,7 @@ class AcpConnection(private val pluginVersion: String) {
             // it answered with is recorded. The stop reason travels in the output and the
             // pipeline branches on it; discarding a MAX_TOKENS reply here would be the plugin
             // deciding the answer was not worth delivering.
+            observation?.turnEnded(turnIndex = 1, stopReason = stopReason)
             return AcpExchange.Completed(
                 reply.toString(),
                 stopReason,

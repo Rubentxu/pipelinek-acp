@@ -29,6 +29,10 @@ MODE (argv[1]) selects the behaviour; unused argv slots are ignored:
              release. Replies TERM=exit<n>:out-<text>:kill-err-<code>:release-ok.
   elic-probe asks a form elicitation (never advertised by the client; asking anyway is
              legal traffic) and replies ELIC=<action> — the honest answer is cancel.
+  flood      on the prompt writes a chunk avalanche (far past the lane's capacity) and NEVER
+             answers: only the caller's budget cancels it. The PKH-136 lifecycle row reads the
+             lane afterwards and demands that the control facts — started and cancelled —
+             survived the avalanche the way the bounded lane promises.
   observe    argv[2]=reply text. Before answering the prompt it sends a rich set of
              session/update traffic — thought, tool call in progress, partial update to
              completion, plan, and an unknown variant — with the fields the redaction
@@ -231,6 +235,10 @@ def main():
             if mode == "cancel":
                 chunk(prompt_session, "waiting-for-cancel")
                 continue  # answered only through session/cancel
+            if mode == "flood":
+                for n in range(1200):
+                    chunk(prompt_session, "f%04d " % n)
+                continue  # never answers: the budget is what ends it
             if mode == "env-probe":
                 text = "CANARY=%s;NVARS=%d;PATHKEY=%s" % (
                     "present" if os.environ.get("ACP_TASK_CANARY") else "absent",

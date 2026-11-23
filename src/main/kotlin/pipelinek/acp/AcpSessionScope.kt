@@ -172,6 +172,15 @@ class AcpSessionConnection(private val pluginVersion: String) {
     val connectionNonce: String = java.util.UUID.randomUUID().toString()
     private val inFlight = AtomicBoolean(false)
 
+    /**
+     * A typed refusal is also a lifecycle fact: the stream carries the refusal's CLASSIFICATION
+     * (the same kindToken the durable output answers with), not its detail — the detail may
+     * quote the agent's stderr, and the stderr is not a fact about the session.
+     */
+    private fun AcpUpdateSink?.exchangeRefused(refusal: AcpRefusal) {
+        this?.exchangeRefused(refusal.kindToken)
+    }
+
     /** The blocking entry point for tests and callers outside a coroutine. */
     fun run(input: AcpSessionInput, observation: AcpUpdateSink? = null): AcpSessionOutput =
         runBlocking { exchange(input, observation) }
@@ -187,12 +196,12 @@ class AcpSessionConnection(private val pluginVersion: String) {
     ): AcpSessionOutput {
         val badMcp = input.mcpServers.firstOrNull { it.transport !in VALID_MCP_TRANSPORTS }
         if (badMcp != null) {
-            return AcpSessionOutcome.toOutput(
-                refusal = AcpRefusal.ConfigInvalid(
-                    "mcp server '${badMcp.name}' declares transport '${badMcp.transport}', " +
-                        "v1 speaks " + VALID_MCP_TRANSPORTS.sorted().joinToString("/"),
-                ),
+            val refusal = AcpRefusal.ConfigInvalid(
+                "mcp server '${badMcp.name}' declares transport '${badMcp.transport}', " +
+                    "v1 speaks " + VALID_MCP_TRANSPORTS.sorted().joinToString("/"),
             )
+            observation?.exchangeRefused(refusal.kindToken)
+            return AcpSessionOutcome.toOutput(refusal = refusal)
         }
         // AC#4's foreign-ref gate, BEFORE anything is launched: a declared load/resume id is
         // resolved against THIS connection — a plain agent id rides unchanged, a token this
@@ -204,18 +213,20 @@ class AcpSessionConnection(private val pluginVersion: String) {
         val foreign = (listOf(loadResolution, resumeResolution)
             .filterIsInstance<SessionIdResolution.Foreign>()).firstOrNull()
         if (foreign != null) {
-            return AcpSessionOutcome.toOutput(refusal = AcpRefusal.ForeignSessionRef(foreign.declared))
+            val refusal = AcpRefusal.ForeignSessionRef(foreign.declared)
+            observation?.exchangeRefused(refusal.kindToken)
+            return AcpSessionOutcome.toOutput(refusal = refusal)
         }
         val wireInput = input.copy(
             loadSessionId = wireIdOf(loadResolution, input.loadSessionId),
             resumeSessionId = wireIdOf(resumeResolution, input.resumeSessionId),
         )
         if (!inFlight.compareAndSet(false, true)) {
-            return AcpSessionOutcome.toOutput(
-                refusal = AcpRefusal.ActivePromptInProgress(
-                    "this session scope already has an exchange running",
-                ),
+            val refusal = AcpRefusal.ActivePromptInProgress(
+                "this session scope already has an exchange running",
             )
+            observation?.exchangeRefused(refusal.kindToken)
+            return AcpSessionOutcome.toOutput(refusal = refusal)
         }
         try {
             return runOnce(wireInput, observation)
@@ -228,6 +239,7 @@ class AcpSessionConnection(private val pluginVersion: String) {
         val process = try {
             AcpAgentProcess.open(input.command)
         } catch (e: AgentLaunchFailed) {
+            observation.exchangeRefused(e.refusal)
             return AcpSessionOutcome.toOutput(refusal = e.refusal)
         }
         val job = SupervisorJob()
@@ -235,35 +247,39 @@ class AcpSessionConnection(private val pluginVersion: String) {
         return try {
             withTimeout(input.timeoutSeconds * 1000) { runScope(input, process, scope, observation) }
         } catch (e: TimeoutCancellationException) {
-            AcpSessionOutcome.toOutput(refusal = AcpRefusal.AgentTimeout(input.timeoutSeconds))
+            val refusal = AcpRefusal.AgentTimeout(input.timeoutSeconds)
+            observation.exchangeRefused(refusal)
+            AcpSessionOutcome.toOutput(refusal = refusal)
         } catch (e: UnsupportedProtocolVersionException) {
-            AcpSessionOutcome.toOutput(refusal = AcpHandshake.refusal(e))
+            val refusal = AcpHandshake.refusal(e)
+            observation.exchangeRefused(refusal)
+            AcpSessionOutcome.toOutput(refusal = refusal)
         } catch (e: SessionOperationSignal) {
             // the sessionOp helper labels the wire failure with the operation the plan
             // declared; the answer keeps that name instead of a generic "acp" rejection.
-            AcpSessionOutcome.toOutput(
-                refusal = AcpRefusal.SessionOperationFailed(e.operation, e.reason),
-            )
+            val refusal = AcpRefusal.SessionOperationFailed(e.operation, e.reason)
+            observation.exchangeRefused(refusal)
+            AcpSessionOutcome.toOutput(refusal = refusal)
         } catch (e: JsonRpcException) {
-            AcpSessionOutcome.toOutput(
-                refusal = AcpRefusal.AgentRefusedRequest("acp", "${e.message} (code ${e.code})"),
-            )
+            val refusal = AcpRefusal.AgentRefusedRequest("acp", "${e.message} (code ${e.code})")
+            observation.exchangeRefused(refusal)
+            AcpSessionOutcome.toOutput(refusal = refusal)
         } catch (e: CancellationException) {
             if (currentCoroutineContext().isActive) {
                 val exit = process.exitCodeOrNull()
-                AcpSessionOutcome.toOutput(
-                    refusal = if (exit != null) AcpRefusal.AgentExited(exit, process.stderrTail)
-                    else AcpRefusal.TransportClosed("the session scope ended before the exchange completed"),
-                )
+                val refusal = if (exit != null) AcpRefusal.AgentExited(exit, process.stderrTail)
+                else AcpRefusal.TransportClosed("the session scope ended before the exchange completed")
+                observation.exchangeRefused(refusal)
+                AcpSessionOutcome.toOutput(refusal = refusal)
             } else {
                 throw e
             }
         } catch (e: Exception) {
             val exit = process.exitCodeOrNull()
-            AcpSessionOutcome.toOutput(
-                refusal = if (exit != null) AcpRefusal.AgentExited(exit, process.stderrTail)
-                else AcpRefusal.TransportFailure(e.message ?: e.toString()),
-            )
+            val refusal = if (exit != null) AcpRefusal.AgentExited(exit, process.stderrTail)
+            else AcpRefusal.TransportFailure(e.message ?: e.toString())
+            observation.exchangeRefused(refusal)
+            AcpSessionOutcome.toOutput(refusal = refusal)
         } finally {
             // AC#1's release clause, and it runs through exception and cancellation too:
             // the coroutine tree dies and the process tree is reaped here, in the scope
@@ -299,8 +315,13 @@ class AcpSessionConnection(private val pluginVersion: String) {
         try {
             val agent = client.initialize(AcpHandshake.clientInfo(pluginVersion))
             AcpHandshake.sessionRefusal(agent, needsOf(input))?.let {
+                observation.exchangeRefused(it)
                 return AcpSessionOutcome.toOutput(refusal = it)
             }
+            // The exchange EXISTS from here on: the negotiation held, so every turn, refusal
+            // and cancel that follows is a fact about an opened exchange — and the stream can
+            // tell them apart from a run that never got this far.
+            observation?.exchangeStarted()
 
             val operationsFactory = ClientOperationsFactory { _, _ -> CapturingOperations(historicSink) }
             val parameters = SessionCreationParameters(
@@ -350,13 +371,16 @@ class AcpSessionConnection(private val pluginVersion: String) {
                 refusal: AcpRefusal,
                 turns: List<AcpTurnOutput> = emptyList(),
                 listed: List<String> = emptyList(),
-            ) = AcpSessionOutcome.toOutput(
-                turns = turns,
-                refusal = refusal,
-                sessionRef = sessionRef.value,
-                historicEvents = historic,
-                sessionsListed = listed,
-            )
+            ): AcpSessionOutput {
+                observation.exchangeRefused(refusal)
+                return AcpSessionOutcome.toOutput(
+                    turns = turns,
+                    refusal = refusal,
+                    sessionRef = sessionRef.value,
+                    historicEvents = historic,
+                    sessionsListed = listed,
+                )
+            }
 
             // Modes and configuration are "available negotiated": the agent decides whether
             // the session carries modes/config at all; asking for either when the session
@@ -439,6 +463,11 @@ class AcpSessionConnection(private val pluginVersion: String) {
                 try {
                     promptInto(session, turn, reply, observation) { stopReason = it }
                 } catch (e: CancellationException) {
+                    // The cancel the stream reports is the one said next: the reason classifies
+                    // WHO ended the turn — the budget or the engine — because the wire cannot.
+                    observation?.exchangeCancelled(
+                        if (e is TimeoutCancellationException) "budget" else "withdrawn",
+                    )
                     // Budget or engine withdrawal: say session/cancel while the protocol
                     // still lives, then let the unwind rethrow — the tree reap in runOnce's
                     // finally is the backstop, not the promise.
@@ -452,6 +481,7 @@ class AcpSessionConnection(private val pluginVersion: String) {
                     )
                 }
                 turns.add(AcpTurnOutput(reply.toString(), stopReason))
+                observation?.turnEnded(turns.size, stopReason)
             }
 
             var logoutOk = false
