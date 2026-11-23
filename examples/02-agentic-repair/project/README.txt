@@ -1,6 +1,6 @@
-"""The project the PKH-143 repair example is broken in, on purpose.
+El proyecto roto del ejemplo de reparacion (PKH-143).
 
-`main.py` ships with a deliberately wrong `total()`. The repair fixture agent
-(mode "fix") rewrites it; THIS file never runs the agent — it is the independent
-check the recipe trusts: its exit code is the only success oracle.
-"""
+main.py trae un total() deliberadamente mal: check.py es la verificacion
+INDEPENDIENTE del recipe (argv del plan, codigo de salida unico oraculo) y el
+repair fixture agent (modo "fix") lo reescribe en el cwd de la sesion. run-examples.sh
+restaura la rotura antes de cada fila.

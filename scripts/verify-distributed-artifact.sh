@@ -37,7 +37,7 @@ test -f "$JAR" || {
 } > "$receipts/ac2-distributed-artifact.log" 2>&1
 
 python3 -I - "$JAR" "$host_version" "$sdk_version" <<'PY'
-import hashlib, json, sys, zipfile
+import json, sys, zipfile
 
 jar, host, sdk = sys.argv[1:4]
 triple = lambda v: tuple(int(p) for p in v.split("."))
@@ -48,7 +48,7 @@ inner = archive.read("META-INF/pipelinek/plugin-manifest.json")
 expected = open("build/resources/main/META-INF/pipelinek/plugin-manifest.json", "rb").read()
 assert inner == expected, "el manifest del jar no es el que el build emitió"
 manifest = json.loads(inner)
-print("manifest: idéntico jar<->build;", "steps:", sorted(s["key"] for s in manifest["steps"]))
+print("manifest: identico jar<->build; steps:", sorted(s["stepKey"] for s in manifest["steps"]))
 
 # 2) apiRange: el host medido debe caer dentro del rango declarado.
 floor, ceiling = (part.strip() for part in manifest["apiRange"].strip("[]()").split(","))
@@ -56,28 +56,23 @@ assert triple(floor) <= triple(host) < triple(ceiling), (
     "el rango %s no admite al host %s" % (manifest["apiRange"], host))
 print("apiRange: %s admite al host distribuido %s" % (manifest["apiRange"], host))
 
-# 3) La firma: el digest declarado es el del payload real (classes+resources
-#    menos los documentos que llevan/derivan del digest, convención del build).
+# 3) La firma: el digest declarado viaja en el propio manifest que el CLI lee, y
+#    debe coincidir con el de las release-properties empaquetadas en el artefacto.
+#    El hash del payload lo mide el stage al escribir la declaracion; la
+#    comprobacion byte a byte del artifact completo la hace el host en la
+#    admision (carril 4). Aqui se verifica que lo DECLARADO viaja con lo que el
+#    CLI lee: manifest y release-properties no pueden contradecirse.
+props_name = "META-INF/pipelinek-acp-release.properties"
+assert props_name in archive.namelist(), "el artefacto no lleva release-properties"
 props = dict(
     line.split("=", 1) for line in
-    archive.read("META-INF/pipelinek-acp-release.properties").decode().splitlines() if "=" in line
+    archive.read(props_name).decode().splitlines() if "=" in line
 )
-excluded = {
-    "META-INF/pipelinek-acp-release.properties",
-    "META-INF/pipelinek/plugin-manifest.json",
-}
-digest = hashlib.sha256()
-for name in sorted(n for n in archive.namelist() if n not in excluded):
-    if name.endswith("/") or not (name.endswith(".class") or name.startswith("META-INF/")):
-        continue
-    digest.update(name.rsplit("/", 1)[-1].encode())
-    digest.update(archive.read(name))
-print("firma declarada:", props["pipeline.acp.release.digest"])
-print("(" "el digest del build hashéa SOLO classes+resources del stage, no el jar "
-      "ensamblado: la comprobación byte a byte del artifact completo la hace el "
-      "host en la admision; aqui se comprueba que lo DECLARADO viaja con lo que "
-      "el CLI lee" + ")")
+assert manifest["releaseDigest"] == props["pipeline.acp.release.digest"], (
+    "el manifest declara otra firma que las release-properties del artefacto")
+assert manifest["releaseVersion"] == props["pipeline.acp.release.version"]
 assert props["pipeline.acp.sdk.version"] == sdk
+print("firma declarada:", manifest["releaseDigest"])
 print("procedencia: sdk=%s publisher=%s namespace=%s" % (
     props["pipeline.acp.sdk.version"], props["pipeline.acp.publisher"],
     props["pipeline.acp.namespace"]))
@@ -120,7 +115,8 @@ assert rows, "el CLI distribuido no journalizo ninguna salida: la admision no oc
 result = json.loads(rows[-1])
 assert result.get("ok") is True, "el paso del plugin fue rechazado: %s %s" % (
     result.get("failureKind"), result.get("detail"))
-assert result.get("outcome") == "COMPLETED", "outcome inesperado: %r" % result
+assert result.get("stopReason") == "END_TURN", "turno no cerrado por el agente: %r" % result
+assert "artifact-check" in result.get("reply", ""), "la respuesta del fixture no llego: %r" % result
 print("admission distribuida: el host leyo el manifest, registro el contributor y "
       "el paso acpPrompt se ejecuto:", result.get("reply", ""))
 PY

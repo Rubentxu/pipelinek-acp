@@ -118,7 +118,8 @@ print("example 02 (bounded test-repair): OK (patch=%s report=%s)" % (
     repair.get("patchPath"), report))
 
 # --- (c) dos revisores independientes: sin contexto ni efectos compartidos.
-rev = outputs("03.sqlite")
+rev = [r for r in outputs("03.sqlite") if "reactionLedger" in r]
+assert len(rev) >= 2, "03: se esperaban dos salidas acpReactive, hay %d" % len(rev)
 a, b = rev[0], rev[1]
 assert a.get("ok") and b.get("ok"), "03: ambos turnos deben completar"
 seen_a = a.get("reply", "")
@@ -127,22 +128,33 @@ assert "review A" in seen_a and "review B" not in seen_a, (
     "03: el revisor A no debe ver la pregunta de B: %r" % seen_a)
 assert "review B" in seen_b and "review A" not in seen_b, (
     "03: el revisor B no debe ver la pregunta de A: %r" % seen_b)
-keys_a = [r["eventKey"]["canonical"] for r in a.get("reactionLedger", [])]
-keys_b = [r["eventKey"]["canonical"] for r in b.get("reactionLedger", [])]
-assert keys_a and keys_b, "03: cada sesion debo journalizar su ledger de reaccion"
-assert not (set(keys_a) & set(keys_b)), (
-    "03: dos sesiones independientes no pueden compartir EventKey: %r %r" % (keys_a, keys_b))
-assert len(set(keys_a + keys_b)) == len(keys_a) + len(keys_b), (
-    "03: ni un efecto duplicado dentro ni entre sesiones")
-tokens_a = {k.split(":")[1] for k in keys_a}
-tokens_b = {k.split(":")[1] for k in keys_b}
+def ledger_pairs(out):
+    rows = {}
+    for r in out.get("reactionLedger", []):
+        key = r["eventKey"]["canonical"]
+        rows.setdefault(key, []).append(r["phase"])
+    return rows
+
+pairs_a, pairs_b = ledger_pairs(a), ledger_pairs(b)
+assert pairs_a and pairs_b, "03: cada sesion debo journalizar su ledger de reaccion"
+assert not (set(pairs_a) & set(pairs_b)), (
+    "03: dos sesiones independientes no pueden compartir EventKey: %r %r" % (
+        sorted(pairs_a), sorted(pairs_b)))
+for name, pairs in (("A", pairs_a), ("B", pairs_b)):
+    for key, phases in pairs.items():
+        assert phases == ["INTENT", "ACKED"], (
+            "03: en %s el evento %s no forma un unico par intent/ack: %r" % (name, key, phases))
+tokens_a = {k.split(":")[1] for k in pairs_a}
+tokens_b = {k.split(":")[1] for k in pairs_b}
 assert tokens_a.isdisjoint(tokens_b), "03: el nonce es por conexion: %r vs %r" % (tokens_a, tokens_b)
 dump("ac1-03-two-reviewers.json", {"a": a, "b": b})
-print("example 03 (two independent reviewers): OK (%d+%d ledger rows, claves disjuntas)" % (
-    len(keys_a), len(keys_b)))
+print("example 03 (two independent reviewers): OK (%d+%d pares intent/ack, claves disjuntas)" % (
+    len(pairs_a), len(pairs_b)))
 
 # --- (d) gateway MCP: el fixture llama una herramienta de sesion.
-mcp = outputs("04.sqlite")[-1]
+mcp_candidates = [r for r in outputs("04.sqlite") if "exposedToolCalls" in r]
+assert mcp_candidates, "04: ninguna salida acpReactive con evidencia de herramientas"
+mcp = mcp_candidates[-1]
 assert mcp.get("ok") is True, "04: el turno con gateway fue rechazado: %s %s" % (
     mcp.get("failureKind"), mcp.get("detail"))
 reply = mcp.get("reply", "")

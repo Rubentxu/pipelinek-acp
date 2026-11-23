@@ -17,6 +17,8 @@ pipeline {
                 verifyCommand = listOf("python3", "-I", "check.py"),
                 cwd = "examples/02-agentic-repair/project",
                 archiveDir = "build/pkh143-examples/repair-archive",
+                // El diff lo pide el PLAN, no el agente: sin diffCommand no hay candidato.
+                diffCommand = listOf("git", "diff", "--", "main.py"),
                 maxRepairAttempts = 2,
                 timeoutSeconds = 120,
             )
