@@ -2,6 +2,7 @@ package pipelinek.acp
 
 import dev.rubentxu.pipeline.v2.dsl.StageScope
 import dev.rubentxu.pipeline.v2.dsl.StepBodyScope
+import dev.rubentxu.pipeline.v2.dsl.StepBodyScopeWrappers
 import dev.rubentxu.pipeline.v2.dsl.StepEmitter
 
 /**
@@ -262,46 +263,74 @@ fun StageScope.acpSession(
  * One agent turn that REACTS to what the agent says while it runs.
  *
  * ```kotlin
+ * import pipelinek.acp.acpAwait
+ * import pipelinek.acp.acpOn
  * import pipelinek.acp.acpReactive
  * pipeline {
  *     stages {
  *         stage("Agent") {
- *             acpReactive(listOf("my-agent", "--acp"), "fix the failing test")
+ *             acpReactive(
+ *                 command = listOf("my-agent", "--acp"),
+ *                 prompt = "fix the failing test",
+ *                 reactions = listOf(acpOn("alert", AcpEventSelector.TextContains("ERROR"))),
+ *                 awaits = listOf(acpAwait(AcpEventSelector.UpdateKind("plan"), 30_000)),
+ *             )
  *         }
  *     }
  * }
  * ```
  *
- * Where `acpPrompt` waits for the agent's answer, this step declares a BODY and dispatches
- * it once per update the agent sends. The body holds exactly one child — the reaction — and
- * the plugin names it by its address, so the engine resolves the same slot every time and
- * every reaction travels with its own durable identity.
+ * Where `acpPrompt` waits for the agent's answer, this step declares a BODY and dispatches it
+ * as the agent talks. [reactions] route those dispatches: each declared reaction names its
+ * child, and the lowering writes that name as a SLOT around the plugin's own reaction step, so
+ * the engine resolves `alert` to exactly one child and the runner can address it. An empty
+ * [reactions] keeps the shipped shape — one unnamed child, every update — because a plan that
+ * says nothing must not change yesterday's run.
  *
- * The body is written by the plugin, not by the author: the reaction is the plugin's own
- * hook, and a body the author filled with arbitrary steps would leave the plugin unable to
- * name the child it has to dispatch.
+ * The body is written by the plugin, not by the author: the reaction is the plugin's own hook,
+ * and a body the author filled with arbitrary steps would leave the plugin unable to name the
+ * children it has to dispatch. [awaits] declare observation, not dispatch: they answer in the
+ * turn's output, in order.
  */
 fun <B : StepEmitter<B>> StepEmitter<B>.acpReactive(
     command: List<String>,
     prompt: String,
     cwd: String = "",
     timeoutSeconds: Long = 300,
+    reactions: List<AcpReactionDeclaration> = emptyList(),
+    awaits: List<AcpAwaitDeclaration> = emptyList(),
 ) {
     registryBlock(
         stepKey = AcpReactiveStepDefinition.KEY,
-        encodedInput = AcpPromptStepDefinition.InputCodec.encode(
-            AcpPromptInput(
+        encodedInput = AcpReactiveStepDefinition.InputCodec.encode(
+            AcpReactiveInput(
                 command = command,
                 prompt = prompt,
                 cwd = cwd,
                 timeoutSeconds = timeoutSeconds,
+                reactions = reactions,
+                awaits = awaits,
             ),
         ),
     ) {
-        registryStep(
-            stepKey = AcpReactionStepDefinition.KEY,
-            encodedInput = AcpReactionStepDefinition.InputCodec.encode(AcpReactionInput()),
-        )
+        val reactionInput = AcpReactionStepDefinition.InputCodec.encode(AcpReactionInput())
+        if (reactions.isEmpty()) {
+            registryStep(AcpReactionStepDefinition.KEY, reactionInput)
+        } else {
+            // Naming a child is the body scope's own verb; an emitter without it cannot host
+            // declared reactions — say so at composition, not as a silent collapse to one slot.
+            val namer = this as? StepBodyScopeWrappers
+                ?: error(
+                    "acpReactive with declared reactions needs a scope that can name body " +
+                        "children (the StageScope/StepBodyScope route); ${this::class.simpleName} cannot",
+                )
+            for (declaration in reactions) {
+                if (declaration.id.isBlank()) continue // the compiler refuses it; emit no child for it
+                namer.slot(declaration.id) {
+                    registryStep(AcpReactionStepDefinition.KEY, reactionInput)
+                }
+            }
+        }
     }
 }
 
@@ -311,7 +340,9 @@ fun StageScope.acpReactive(
     prompt: String,
     cwd: String = "",
     timeoutSeconds: Long = 300,
+    reactions: List<AcpReactionDeclaration> = emptyList(),
+    awaits: List<AcpAwaitDeclaration> = emptyList(),
 ) {
     val emitter: StepEmitter<StepBodyScope> = this
-    emitter.acpReactive(command, prompt, cwd, timeoutSeconds)
+    emitter.acpReactive(command, prompt, cwd, timeoutSeconds, reactions, awaits)
 }

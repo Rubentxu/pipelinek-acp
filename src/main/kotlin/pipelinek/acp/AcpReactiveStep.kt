@@ -19,8 +19,6 @@ import dev.rubentxu.pipeline.v2.domain.step.BODY_CONTINUATION_CAPABILITY
 import dev.rubentxu.pipeline.v2.domain.step.BODY_SLOT_CAPABILITY
 import dev.rubentxu.pipeline.v2.domain.step.BodyExecutionOwner
 import dev.rubentxu.pipeline.v2.domain.step.BodyExecutionPolicy
-import dev.rubentxu.pipeline.v2.domain.step.BodyInvocationContext
-import dev.rubentxu.pipeline.v2.domain.step.BodyOutcome
 import dev.rubentxu.pipeline.v2.domain.step.BodySlotInvoker
 import dev.rubentxu.pipeline.v2.domain.step.EncodedStepValue
 import dev.rubentxu.pipeline.v2.domain.step.RecoveredProjection
@@ -33,6 +31,8 @@ import dev.rubentxu.pipeline.v2.domain.step.StepHandler
 import dev.rubentxu.pipeline.v2.runtime.input.INPUT_DECISIONS_CAPABILITY
 import dev.rubentxu.pipeline.v2.runtime.input.InputDecisions
 import java.nio.file.Path
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 
 /**
@@ -49,9 +49,11 @@ fun interface AcpReaction {
  * The `acpReactive` step: one agent turn that REACTS to what the agent says while it runs.
  *
  * Where [AcpPromptStepDefinition] waits for the agent's answer and says nothing until it
- * arrives, this step declares a BODY and reacts to every update the agent sends: each update
- * dispatches the body's reaction slot, once, with its own durable identity. The body is the
- * pipeline's hook; the step is the client that drives it.
+ * arrives, this step declares a BODY and reacts to what the agent sends: each update is routed
+ * by the plan compiled from the input's declarations (see [compileAcpReactionPlan]), and each
+ * match dispatches its named body slot with its own durable identity. The body is the
+ * pipeline's hook; the step is the client that drives it. Declaring no reaction keeps the
+ * shipped law verbatim: one unnamed slot, every update.
  *
  * ## The body, and who owns it
  *
@@ -67,10 +69,10 @@ fun interface AcpReaction {
  *
  * ## The durable identity of one reaction
  *
- * Every invocation carries its own [AttemptSegment]. The engine appends it to the body's path
- * as a deterministic segment, so two reactions of the same turn are two different operations in
- * the journal and two different rows on restart — the identity is the segment, never a counter
- * held in memory.
+ * Every invocation carries its own [AttemptSegment], minted by the [AcpReactionRunner]. The
+ * engine appends it to the body's path as a deterministic segment, so two reactions of the
+ * same turn are two different operations in the journal and two different rows on restart —
+ * the identity is the segment, never a counter held in memory.
  *
  * ## What the step does NOT do
  *
@@ -80,8 +82,8 @@ fun interface AcpReaction {
  * put to a person through the human-decision port (see [AcpHumanDecision]).
  */
 object AcpReactiveStepDefinition :
-    StepDefinition<AcpPromptInput, AcpReactiveOutput>,
-    RecoveredStepProjection<AcpPromptInput, AcpReactiveOutput> {
+    StepDefinition<AcpReactiveInput, AcpReactiveOutput>,
+    RecoveredStepProjection<AcpReactiveInput, AcpReactiveOutput> {
 
     val KEY: PluginStepId = PluginStepId("pipelinek.acp.reactive")
 
@@ -91,7 +93,18 @@ object AcpReactiveStepDefinition :
     /** The segment key every reaction's attempt identity carries. */
     val ATTEMPT_KEY: PluginStepId = PluginStepId("acp-reaction")
 
+    /** Refusal token for a plan the compiler will not route; no agent was launched yet. */
+    const val PLAN_REJECTED: String = "ACP_PLAN_REJECTED"
+
     private val json = Json { encodeDefaults = true; ignoreUnknownKeys = false }
+
+    internal object InputCodec : StepCodec<AcpReactiveInput> {
+        override fun encode(value: AcpReactiveInput): EncodedStepValue =
+            EncodedStepValue(json.encodeToString(AcpReactiveInput.serializer(), value))
+
+        override fun decode(encoded: EncodedStepValue): AcpReactiveInput =
+            json.decodeFromString(AcpReactiveInput.serializer(), encoded.value)
+    }
 
     internal object OutputCodec : StepCodec<AcpReactiveOutput> {
         override fun encode(value: AcpReactiveOutput): EncodedStepValue =
@@ -101,7 +114,7 @@ object AcpReactiveStepDefinition :
             json.decodeFromString(AcpReactiveOutput.serializer(), encoded.value)
     }
 
-    override val contract: StepContract<AcpPromptInput, AcpReactiveOutput> by lazy {
+    override val contract: StepContract<AcpReactiveInput, AcpReactiveOutput> by lazy {
         StepContract(
             key = KEY,
             descriptor = StepDescriptor(
@@ -132,7 +145,7 @@ object AcpReactiveStepDefinition :
                     introduces = null,
                 ),
             ),
-            inputCodec = AcpPromptStepDefinition.InputCodec,
+            inputCodec = InputCodec,
             outputCodec = OutputCodec,
             // The slot seam is what the handler drives. The continuation is declared because
             // the published coherence check binds a HANDLER_CONTINUATION step to it: a body
@@ -148,38 +161,99 @@ object AcpReactiveStepDefinition :
         )
     }
 
-    override val handler = StepHandler<AcpPromptInput, AcpReactiveOutput> { input, context ->
+    override val handler = StepHandler<AcpReactiveInput, AcpReactiveOutput> { input, context ->
         val slot: BodySlotInvoker = context.capabilities.get(BODY_SLOT_CAPABILITY, BodySlotInvoker::class)
-        val dispatcher = AcpReactionDispatcher(slot, REACTION_SLOT, ATTEMPT_KEY)
-        // The reverse leg denies every permission: the authority is null and the profile is
-        // READONLY, so an agent that asks for a grant gets the protocol's refusal. The
-        // reactive step reacts to what the agent says; it does not grant what the agent asks.
-        // An elicitation is not a grant: it is the agent asking for a person's input, and
-        // the port is how that question reaches a person.
-        val decisions: InputDecisions =
-            context.capabilities.get(INPUT_DECISIONS_CAPABILITY, InputDecisions::class)
-        val reverse = AcpReverseSession(
-            workspaceRoot = Path.of(input.cwd.ifEmpty { System.getProperty("user.dir") }),
-            profile = AcpTaskProfile.READONLY,
-            authority = null,
-            humanDecision = AcpHumanDecision(decisions),
-            budgetMillis = input.timeoutSeconds * 1000,
-        )
-        when (
-            val exchange = AcpConnection(AcpPluginDeclaration.declaredVersion())
-                .exchange(input, reverse, dispatcher)
-        ) {
+        when (val compiled = compileAcpReactionPlan(input.reactions, input.awaits)) {
+            // The plan is data, so it is checked as data — BEFORE the agent is launched. A
+            // routing ambiguity caught here costs no turn; one discovered mid-turn would be a
+            // dispatch the journal cannot even attribute, because an unroutable plan has no
+            // slot identity to journal under.
+            is AcpPlanCompilation.Rejected -> AcpReactiveOutput(
+                ok = false,
+                failureKind = PLAN_REJECTED,
+                detail = compiled.reasons.joinToString("; "),
+            )
+            is AcpPlanCompilation.Compiled -> {
+                val decisions: InputDecisions =
+                    context.capabilities.get(INPUT_DECISIONS_CAPABILITY, InputDecisions::class)
+                runReactiveTurn(input, slot, decisions, compiled)
+            }
+        }
+    }
+
+    /**
+     * Drive one reactive turn: the runner takes the events the reader receives, the awaits
+     * observe the same stream, and the output says what each of them did.
+     *
+     * The reader hands updates to [AcpReactionRunner.submit] and never waits for a body (the
+     * deadlock law of AC#4); the awaits run as children of the turn's scope, and when the turn
+     * ends their remaining budget is cut short — no event can arrive after the session closes,
+     * so a still-pending await reports [AcpAwaitVerdict.TimedOut], never a lie.
+     */
+    private suspend fun runReactiveTurn(
+        input: AcpReactiveInput,
+        slot: BodySlotInvoker,
+        decisions: InputDecisions,
+        compiled: AcpPlanCompilation.Compiled,
+    ): AcpReactiveOutput {
+        val runner = AcpReactionRunner(slot, compiled.reactions)
+        val awaitVerdicts = arrayOfNulls<AcpAwaitVerdict>(compiled.awaits.size)
+        val exchange = coroutineScope {
+            runner.start(this)
+            val awaitJobs = compiled.awaits.mapIndexed { index, declaration ->
+                launch {
+                    awaitVerdicts[index] = runner.await(declaration.condition, declaration.timeoutMillis)
+                }
+            }
+            // The reverse leg denies every permission: the authority is null and the profile is
+            // READONLY, so an agent that asks for a grant gets the protocol's refusal. The
+            // reactive step reacts to what the agent says; it does not grant what the agent asks.
+            // An elicitation is not a grant: it is the agent asking for a person's input, and
+            // the port is how that question reaches a person.
+            val reverse = AcpReverseSession(
+                workspaceRoot = Path.of(input.cwd.ifEmpty { System.getProperty("user.dir") }),
+                profile = AcpTaskProfile.READONLY,
+                authority = null,
+                humanDecision = AcpHumanDecision(decisions),
+                budgetMillis = input.timeoutSeconds * 1000,
+            )
+            try {
+                AcpConnection(AcpPluginDeclaration.declaredVersion())
+                    .exchange(
+                        AcpPromptInput(input.command, input.prompt, input.cwd, input.timeoutSeconds),
+                        reverse,
+                        AcpReaction { runner.submit(it) },
+                    )
+            } finally {
+                runner.finish()
+                awaitJobs.forEach { it.cancel() }
+                awaitJobs.forEach { it.join() }
+            }
+        }
+        val verdicts = compiled.awaits.indices.map { awaitVerdicts[it] ?: AcpAwaitVerdict.TimedOut }
+        val summaries = compiled.reactions.map { reaction ->
+            AcpReactionSummary(
+                id = reaction.id,
+                invocations = runner.invocations.count { it.reactionId == reaction.id },
+                skipped = runner.skipped.filter { it.reactionId == reaction.id }.map { it.eventCursor },
+            )
+        }
+        return when (exchange) {
             is AcpExchange.Completed -> AcpReactiveOutput(
                 ok = true,
                 reply = exchange.reply,
                 stopReason = exchange.stopReason,
-                reactions = dispatcher.invocations,
+                reactions = runner.invocations.size,
+                reactionSummary = summaries,
+                awaitVerdicts = verdicts,
             )
             is AcpExchange.Refused -> AcpReactiveOutput(
                 ok = false,
                 failureKind = exchange.refusal.kindToken,
                 detail = exchange.refusal.detail,
-                reactions = dispatcher.invocations,
+                reactions = runner.invocations.size,
+                reactionSummary = summaries,
+                awaitVerdicts = verdicts,
             )
         }
     }
@@ -197,7 +271,7 @@ object AcpReactiveStepDefinition :
      * and the recovered run fails closed instead of claiming an answer nobody witnessed.
      */
     override fun project(
-        input: AcpPromptInput,
+        input: AcpReactiveInput,
         terminal: DurableTaskTerminal,
     ): RecoveredProjection<AcpReactiveOutput> = when (terminal) {
         is DurableTaskTerminal.Exited ->
@@ -239,21 +313,36 @@ object AcpReactiveStepDefinition :
 /**
  * What a reactive turn produced.
  *
- * [reactions] is the number of body-slot invocations the turn caused — one per update the
- * agent sent while it ran. It travels in the durable output because it is the observable
- * trace of the reaction, and a turn that reacted to nothing must be distinguishable from a
- * turn that never ran.
+ * [reactions] is the number of body-slot invocations the turn caused — one per dispatch the
+ * runner made. It travels in the durable output because it is the observable trace of the
+ * reaction, and a turn that reacted to nothing must be distinguishable from a turn that never
+ * ran. [reactionSummary] breaks that trace down per declared reaction — including the
+ * [AcpReactionSummary.skipped] later matches of a `once` reaction, so a skip is an OBSERVED
+ * outcome, not silence — and [awaitVerdicts] answers each declared await in declaration order.
  */
 @kotlinx.serialization.Serializable
 data class AcpReactiveOutput(
     val ok: Boolean,
     val reply: String = "",
     val stopReason: String = "",
-    /** How many times the body's reaction slot was invoked. */
+    /** How many times the reaction slots were invoked in total. */
     val reactions: Int = 0,
-    /** one of [AcpRefusal.kindToken] when [ok] is false; empty when it is true. */
+    /** one of [AcpRefusal.kindToken] — or [AcpReactiveStepDefinition.PLAN_REJECTED] — when [ok] is false; empty when it is true. */
     val failureKind: String = "",
     val detail: String = "",
+    /** Per-declared reaction: dispatch count and skipped cursors; the unnamed default plans as one entry. */
+    val reactionSummary: List<AcpReactionSummary> = emptyList(),
+    /** One verdict per declared await, in declaration order. */
+    val awaitVerdicts: List<AcpAwaitVerdict> = emptyList(),
+)
+
+/** The trace one declared reaction left in the turn. */
+@kotlinx.serialization.Serializable
+data class AcpReactionSummary(
+    val id: String,
+    val invocations: Int,
+    /** Cursors of the later matches a `once` reaction refused; empty unless [AcpReactionDeclaration.once]. */
+    val skipped: List<Long> = emptyList(),
 )
 
 /**
@@ -328,39 +417,24 @@ data class AcpReactionOutput(
 )
 
 /**
- * The reactive half of [AcpReactiveStepDefinition]: one slot invocation per agent update,
- * each with its own durable identity.
+ * The input of a reactive turn: the prompt half is [AcpPromptInput]'s shape, and the reaction
+ * half is DECLARED data — [compileAcpReactionPlan] routes it into static slots before the
+ * agent is launched, and the journal stores this same encoding, so a recovered run reads back
+ * the routing it was promised.
  *
- * The counter that numbers the attempts is NOT the identity: the identity is the
- * [AttemptSegment] the engine turns into a deterministic path segment, and it is minted here
- * because the handler is the party that knows which reaction this is.
+ * A failed or cancelled reaction does not stop the turn: the agent keeps talking and the
+ * pipeline keeps reacting, and each reaction's own outcome stays in its journal row. The
+ * update itself never crosses the boundary — the reaction is the decision to react, and the
+ * payload is the agent's.
  */
-class AcpReactionDispatcher(
-    private val slot: BodySlotInvoker,
-    private val slotId: PluginStepId,
-    private val attemptKey: PluginStepId,
-) : AcpReaction {
-
-    private val segments = mutableListOf<AttemptSegment>()
-    private val outcomes = mutableListOf<BodyOutcome>()
-
-    /** How many reactions were dispatched. */
-    val invocations: Int get() = segments.size
-
-    /** The identity each reaction travelled with, in order. */
-    val identities: List<AttemptSegment> get() = segments.toList()
-
-    /** What the engine answered each reaction with, in order. */
-    val results: List<BodyOutcome> get() = outcomes.toList()
-
-    override suspend fun react(update: SessionUpdate) {
-        val segment = AttemptSegment(index = segments.size + 1, key = attemptKey)
-        val outcome = slot.invoke(slotId, BodyInvocationContext(attempt = segment))
-        segments += segment
-        outcomes += outcome
-        // A failed or cancelled reaction does not stop the turn: the agent keeps talking and
-        // the pipeline keeps reacting, and the reaction's own outcome stays in its journal
-        // row. The update itself never crosses the boundary — the reaction is the decision
-        // to react, and the payload is the agent's.
-    }
-}
+@kotlinx.serialization.Serializable
+data class AcpReactiveInput(
+    val command: List<String>,
+    val prompt: String,
+    val cwd: String = "",
+    val timeoutSeconds: Long = 300,
+    /** `on(id, selector)` declarations; empty keeps the shipped unnamed single-slot plan. */
+    val reactions: List<AcpReactionDeclaration> = emptyList(),
+    /** `await(condition, timeout)` declarations, answered in this order. */
+    val awaits: List<AcpAwaitDeclaration> = emptyList(),
+)

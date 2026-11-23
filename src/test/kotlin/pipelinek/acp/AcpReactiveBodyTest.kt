@@ -97,8 +97,9 @@ class AcpReactiveBodyTest {
             sink[1].first,
             "the body child is the reaction the handler dispatches",
         )
-        val decoded = AcpPromptStepDefinition.InputCodec.decode(sink[0].second)
+        val decoded = AcpReactiveStepDefinition.InputCodec.decode(sink[0].second)
         assertEquals("react to me", decoded.prompt)
+        assertTrue(decoded.reactions.isEmpty(), "no reaction declared: the shipped unnamed plan stands")
     }
 
     @Test
@@ -133,16 +134,18 @@ class AcpReactiveBodyTest {
 
     @Test
     fun `every agent update dispatches the same slot once, with its own durable identity`() {
+        // The published law of the shipped default plan, now served by the runner: an empty
+        // declaration list addresses the unnamed slot with the shipped attempt key, one
+        // invocation per update, distinct indices.
         val slot = RecordingSlot()
-        val dispatcher = AcpReactionDispatcher(
-            slot,
-            AcpReactiveStepDefinition.REACTION_SLOT,
-            AcpReactiveStepDefinition.ATTEMPT_KEY,
-        )
+        val plan = (compileAcpReactionPlan(emptyList(), emptyList()) as AcpPlanCompilation.Compiled).reactions
         runBlocking {
-            dispatcher.react(update("one"))
-            dispatcher.react(update("two"))
-            dispatcher.react(update("three"))
+            val runner = AcpReactionRunner(slot, plan)
+            runner.start(this)
+            runner.submit(update("one"))
+            runner.submit(update("two"))
+            runner.submit(update("three"))
+            runner.finish()
         }
 
         assertEquals(3, slot.invocations.size, "one invocation per update the agent sent")
@@ -176,7 +179,7 @@ class AcpReactiveBodyTest {
         val workDir = Files.createTempDirectory("acp-reactive-")
         val output = runBlocking {
             AcpReactiveStepDefinition.handler.execute(
-                AcpPromptInput(
+                AcpReactiveInput(
                     command = listOf("python3", "-I", agent.toString()),
                     prompt = "react",
                     cwd = workDir.toString(),
