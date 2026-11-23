@@ -139,6 +139,35 @@ class AcpObservationReducerTest {
     }
 
     @Test
+    fun `the decoder never lets credentials ride in a uri`() {
+        // The whitelist reads a resource link's URI as its kind, but a URI is also the one
+        // place an agent can put user:token and a query secret and call it a locator. The
+        // shape that must survive is scheme://host/path; anything past the authority that
+        // authenticates or selects must not.
+        val secret = "https://user:SECRETTOKEN@host.example/deep/path?access=SECRETTOKEN#SECRETTOKEN"
+        val link = AcpObservationDecoder.decode(
+            SessionUpdate.AgentMessageChunk(ContentBlock.ResourceLink(uri = secret, name = "n", mimeType = null)),
+            "ex-1",
+        ) as AcpObservation.AgentMessageChunk
+        val plan = AcpObservationDecoder.decode(
+            SessionUpdate.PlanUpdateV2(
+                plan = com.agentclientprotocol.model.PlanVariant.File(id = "p", uri = secret, _meta = null),
+                _meta = null,
+            ),
+            "ex-1",
+        ) as AcpObservation.Plan
+
+        for (fact in listOf(link.content, plan.entries.single().content)) {
+            assertTrue(fact.isNotEmpty(), "the uri summary went blank instead of redacted: $fact")
+            assertTrue(fact.contains("host.example"), "the summary lost the locator's identity: $fact")
+            assertTrue(!fact.contains("SECRETTOKEN"), "a credential rode into the durable fact: $fact")
+            assertTrue(!fact.contains("user:"), "the userinfo survived the redaction: $fact")
+            assertTrue(!fact.contains("?") && !fact.contains("#"), "query/fragment survived the redaction: $fact")
+        }
+        assertTrue(link.content.startsWith("link/"), "the summary no longer names what it is: ${link.content}")
+    }
+
+    @Test
     fun `the decoder answers an unknown variant with the discriminator and nothing else`() {
         val raw = kotlinx.serialization.json.Json.parseToJsonElement("""{"secret":"hide me"}""")
             .let { it as kotlinx.serialization.json.JsonObject }

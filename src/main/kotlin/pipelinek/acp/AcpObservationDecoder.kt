@@ -189,7 +189,27 @@ internal object AcpObservationDecoder {
             )
         }
         is PlanVariant.Markdown -> listOf(AcpPlanEntry(content = plan.content))
-        is PlanVariant.File -> listOf(AcpPlanEntry(content = plan.uri))
+        is PlanVariant.File -> listOf(AcpPlanEntry(content = safeUri(plan.uri)))
+    }
+
+    /**
+     * A URI reduced to what locates and never what authenticates: scheme, host and path.
+     *
+     * A URI is the one whitelisted field an agent controls end to end — `user:token@host`
+     * with a `?access=` query is a legal URI and a credential. The locator's identity is the
+     * authority host plus the path; userinfo, query and fragment select or authenticate, so
+     * they are cut. A URI with no scheme (opaque or relative) keeps its path under the same
+     * cut.
+     */
+    private fun safeUri(raw: String): String {
+        val schemeSep = raw.indexOf("://")
+        if (schemeSep < 0) return raw.substringBefore('?').substringBefore('#')
+        val rest = raw.substring(schemeSep + 3)
+        val authorityEnd = rest.indexOfFirst { it == '/' || it == '?' || it == '#' }
+        val authority = if (authorityEnd < 0) rest else rest.substring(0, authorityEnd)
+        val tail = if (authorityEnd < 0) "" else rest.substring(authorityEnd)
+        return raw.substring(0, schemeSep) + "://" + authority.substringAfterLast('@') +
+            tail.substringBefore('?').substringBefore('#')
     }
 
     /** The current value of a configuration option, as text. */
@@ -243,6 +263,6 @@ internal object AcpObservationDecoder {
                 truncated = text.length < fullLength,
             )
         }
-        is ContentBlock.ResourceLink -> BlockRead("", "link/${block.uri}", false)
+        is ContentBlock.ResourceLink -> BlockRead("", "link/${safeUri(block.uri)}", false)
     }
 }
