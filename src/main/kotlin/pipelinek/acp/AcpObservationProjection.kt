@@ -91,10 +91,28 @@ class AcpObservationContributor : EventDefinitionContributor {
  *
  * The implementation MUST NOT block: it runs on the thread that reads the agent's pipe, and
  * that thread is the one that has to stay free to deliver the cancellation.
+ *
+ * The lifecycle doors carry the facts the plugin establishes ABOUT ITS OWN EXCHANGE — the one
+ * it opened, the turn that ended, the cancel it said, the refusal it answered. They default to
+ * silence because a sink that only projects updates is still a valid observer; a run that owes
+ * the lifecycle facts to its stream wires the observing publisher, and there each one lands as
+ * a VERIFIED fact of the same vocabulary.
  */
 interface AcpUpdateSink {
     /** One session update the agent sent. */
     fun accept(update: SessionUpdate)
+
+    /** The plugin opened this exchange. */
+    fun exchangeStarted() {}
+
+    /** One prompt turn ended with the stop reason the agent gave. */
+    fun turnEnded(turnIndex: Int, stopReason: String) {}
+
+    /** The exchange was cancelled before it finished; [reason] names whose cancellation it was. */
+    fun exchangeCancelled(reason: String) {}
+
+    /** The exchange ended in a refusal; [failureKind] is the typed refusal's classification. */
+    fun exchangeRefused(failureKind: String) {}
 }
 
 /**
@@ -159,6 +177,18 @@ internal class AcpObservationPublisher(
         }
         wakeup.trySend(Unit)
     }
+
+    override fun exchangeStarted() =
+        publishFact(AcpObservation.ExchangeStarted(exchangeRef(), AcpEvidence.VERIFIED))
+
+    override fun turnEnded(turnIndex: Int, stopReason: String) =
+        publishFact(AcpObservation.TurnEnded(exchangeRef(), AcpEvidence.VERIFIED, turnIndex, stopReason))
+
+    override fun exchangeCancelled(reason: String) =
+        publishFact(AcpObservation.ExchangeCancelled(exchangeRef(), AcpEvidence.VERIFIED, reason))
+
+    override fun exchangeRefused(failureKind: String) =
+        publishFact(AcpObservation.ExchangeRefused(exchangeRef(), AcpEvidence.VERIFIED, failureKind))
 
     private fun fold(observation: AcpObservation): List<AcpObservation> =
         synchronized(foldLock) { reducer.apply(observation) }
