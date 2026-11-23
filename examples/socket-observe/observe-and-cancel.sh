@@ -44,6 +44,9 @@ printf '%s pipelinek-actor all+start+cancel+answer\n%s pipelinek-reader all\n' \
 chmod 600 "$auth"
 
 mkdir -p "$state/workspaces/default"
+# The service READS the substrate, it does not create one: prepare the store first,
+# or serve refuses to bind at all ("the store is not there").
+pipelinek substrate init --db "$state/run.sqlite"
 pipelinek serve \
   --db "$state/run.sqlite" \
   --control-root "$state/control" \
