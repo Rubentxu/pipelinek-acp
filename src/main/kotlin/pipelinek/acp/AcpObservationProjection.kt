@@ -127,6 +127,15 @@ internal class AcpObservationPublisher(
 
     private val lane = AcpObservationLane(AcpObservationCodec)
     private val reducer = AcpObservationReducer(exchangeRef)
+
+    /**
+     * The fold is confined by serialization: [accept] runs on the thread of the prompt flow
+     * AND on the thread of the transport (reverse notifications arrive there), and the
+     * reducer's merged view is a law only if two folds never interleave. Only the fold takes
+     * this lock — the lane offer and the wake-up stay outside it, so a reader still never
+     * waits on publishing.
+     */
+    private val foldLock = Any()
     private val wakeup = Channel<Unit>(Channel.CONFLATED)
     private var unpublished: Int = 0
     private var published: Int = 0
@@ -137,11 +146,22 @@ internal class AcpObservationPublisher(
     /** The reader's side: never blocks. */
     override fun accept(update: SessionUpdate) {
         val observation = AcpObservationDecoder.decode(update, exchangeRef())
-        for (fact in reducer.apply(observation)) {
+        for (fact in fold(observation)) {
             lane.offer(fact)
         }
         wakeup.trySend(Unit)
     }
+
+    /** Folds [observation] and offers the resulting facts to the lane; the lifecycle door. */
+    private fun publishFact(fact: AcpObservation) {
+        for (merged in fold(fact)) {
+            lane.offer(merged)
+        }
+        wakeup.trySend(Unit)
+    }
+
+    private fun fold(observation: AcpObservation): List<AcpObservation> =
+        synchronized(foldLock) { reducer.apply(observation) }
 
     /**
      * Publishes what the lane holds, until the lane is empty.
