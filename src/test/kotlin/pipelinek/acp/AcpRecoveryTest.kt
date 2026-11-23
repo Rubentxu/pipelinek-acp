@@ -32,7 +32,7 @@ import org.junit.jupiter.api.Test
  */
 class AcpRecoveryTest {
 
-    private val input = AcpPromptInput(command = listOf("agent"), prompt = "once")
+    private val input = AcpReactiveInput(command = listOf("agent"), prompt = "once")
 
     private fun failure(message: String): FailureRecord = FailureRecord(
         code = "E_TEST",

@@ -258,13 +258,19 @@ data class AcpSkippedReaction(
 /**
  * The verdict of [AcpReactionRunner.await]: an event matched within budget, or the budget ran
  * out. Typed data, never an exception — a turn that awaited and did not get its event is a
- * legitimate outcome the durable output has to carry, not a crash.
+ * legitimate outcome the durable output has to carry, not a crash. It is serializable for that
+ * same reason: the verdict belongs to the journal, not just to the live call.
  */
+@kotlinx.serialization.Serializable
 sealed class AcpAwaitVerdict {
 
     /** Some observed update matched, at runner cursor [eventCursor]. */
+    @kotlinx.serialization.Serializable
+    @kotlinx.serialization.SerialName("Satisfied")
     data class Satisfied(val eventCursor: Long) : AcpAwaitVerdict()
 
-    /** No matching update arrived within the declared budget. */
+    /** No matching update arrived within the declared budget — or the turn ended first. */
+    @kotlinx.serialization.Serializable
+    @kotlinx.serialization.SerialName("TimedOut")
     data object TimedOut : AcpAwaitVerdict()
 }
