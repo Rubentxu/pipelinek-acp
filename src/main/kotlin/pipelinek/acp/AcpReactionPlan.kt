@@ -92,12 +92,26 @@ internal fun acpUpdateKind(update: SessionUpdate): String =
  * routing decision the plan cannot make for the engine. [AcpEventSelector] decides WHEN the
  * slot runs; [once] narrows it further: the slot fires for the FIRST matching event only and
  * every later match is recorded as skipped, never dispatched again.
+ *
+ * PKH-138 adds the reconciliation vocabulary to the same declaration, still as pure data:
+ * [operator] is a limiting law the gate enforces at dispatch ([AcpReactionOperator.Take],
+ * [AcpReactionOperator.Distinct], [AcpReactionOperator.Debounce] — the last only for a
+ * [coalescible] reaction), [effectful] marks a reaction whose dispatch performs an external
+ * effect, the one class the reconciler suspends when history and live cannot be told apart.
+ * A reaction that declares both [once] and an [operator] would be two budgets over one slot
+ * answering to different clocks; the compiler refuses it rather than pick.
  */
 @Serializable
 data class AcpReactionDeclaration(
     val id: String,
     val selector: AcpEventSelector,
     val once: Boolean = false,
+    /** limiting operator enforced at dispatch; null means "every match dispatches". */
+    val operator: AcpReactionOperator? = null,
+    /** the reaction's dispatch performs an external effect — the suspension target (AC#2). */
+    val effectful: Boolean = false,
+    /** its events are telemetry that may legally fold; required by Debounce (AC#4). */
+    val coalescible: Boolean = false,
 )
 
 /**
@@ -113,8 +127,23 @@ data class AcpAwaitDeclaration(
 )
 
 /** Declare one reaction: slot [id] runs when [selector] matches an update the agent sends. */
-fun acpOn(id: String, selector: AcpEventSelector, once: Boolean = false): AcpReactionDeclaration =
-    AcpReactionDeclaration(id, selector, once)
+fun acpOn(
+    id: String,
+    selector: AcpEventSelector,
+    once: Boolean = false,
+    operator: AcpReactionOperator? = null,
+    effectful: Boolean = false,
+    coalescible: Boolean = false,
+): AcpReactionDeclaration = AcpReactionDeclaration(id, selector, once, operator, effectful, coalescible)
+
+/** Take at most [limit] matches of the reaction declaring it (AC#4). */
+fun acpTake(limit: Int): AcpReactionOperator = AcpReactionOperator.Take(limit)
+
+/** Dispatch only when the event token differs from the last dispatched one (AC#4). */
+fun acpDistinct(): AcpReactionOperator = AcpReactionOperator.Distinct
+
+/** Fold same-token matches within [windowMillis]; only legal on a coalescible reaction (AC#4). */
+fun acpDebounce(windowMillis: Long): AcpReactionOperator = AcpReactionOperator.Debounce(windowMillis)
 
 /** Declare one await: the turn observes [condition] until [timeoutMillis] elapses. */
 fun acpAwait(condition: AcpEventSelector, timeoutMillis: Long): AcpAwaitDeclaration =
@@ -134,6 +163,10 @@ class AcpCompiledReaction(
     val selector: AcpEventSelector,
     val once: Boolean,
     val isDefault: Boolean = false,
+    /** the declared limiting operator, enforced per-event by the runner's gate (AC#4). */
+    val operator: AcpReactionOperator? = null,
+    /** dispatching this reaction performs an external effect — the reconciler's suspension flag. */
+    val effectful: Boolean = false,
 ) {
 
     /** The segment key every invocation of this reaction's attempt identity carries. */
@@ -216,11 +249,14 @@ fun compileAcpReactionPlan(
             }
             AcpEventSelector.AnyUpdate -> Unit
         }
+        reasons += operatorRefusals(declaration)
         AcpCompiledReaction(
             id = declaration.id,
             slot = PluginStepId(declaration.id),
             selector = declaration.selector,
             once = declaration.once,
+            operator = declaration.operator,
+            effectful = declaration.effectful,
         )
     }
     reasons += awaits.mapIndexedNotNull { index, await -> awaitRefusal(index, await) }
@@ -230,6 +266,50 @@ fun compileAcpReactionPlan(
     } else {
         AcpPlanCompilation.Rejected(reasons)
     }
+}
+
+/**
+ * The AC#4 limits, checked as data BEFORE the agent launches: an operator that cannot be
+ * bounded at compile time is an unbounded buffer with a declarative name. `once` plus an
+ * operator would be two budgets over one slot, so the compiler refuses the pair instead of
+ * choosing; a Debounce outside the declared window bound, a Take outside its cap, and any
+ * Debounce on a reaction that never said its events are coalescible are all refusals naming the
+ * declaration, never a silent clamp.
+ */
+private fun operatorRefusals(declaration: AcpReactionDeclaration): List<String> {
+    val operator = declaration.operator ?: return emptyList()
+    val reasons = mutableListOf<String>()
+    if (declaration.once) {
+        reasons += "reaction '${declaration.id}': declares both once and an operator — " +
+            "one slot gets one budget; drop 'once' or the operator"
+    }
+    when (operator) {
+        is AcpReactionOperator.Take -> when {
+            operator.limit <= 0 ->
+                reasons += "reaction '${declaration.id}': take(${operator.limit}) dispatches nothing — " +
+                    "a limit must be positive, or the reaction is dead code"
+            operator.limit > AcpReactionOperator.MAX_TAKE_LIMIT ->
+                reasons += "reaction '${declaration.id}': take(${operator.limit}) exceeds the cap " +
+                    "${AcpReactionOperator.MAX_TAKE_LIMIT} — past it, say AnyUpdate and bound the queue"
+        }
+        is AcpReactionOperator.Debounce -> {
+            if (operator.windowMillis <= 0) {
+                reasons += "reaction '${declaration.id}': debounce(${operator.windowMillis}ms) has no " +
+                    "window — a non-positive window folds nothing"
+            } else if (operator.windowMillis > AcpReactionOperator.MAX_DEBOUNCE_WINDOW_MILLIS) {
+                reasons += "reaction '${declaration.id}': debounce window ${operator.windowMillis}ms " +
+                    "exceeds ${AcpReactionOperator.MAX_DEBOUNCE_WINDOW_MILLIS}ms — beyond that this is " +
+                    "parking, not coalescing"
+            }
+            if (!declaration.coalescible) {
+                reasons += "reaction '${declaration.id}': debounce is declared on a non-coalescible " +
+                    "reaction — only telemetry may fold; say coalescible = true if its events lose " +
+                    "nothing when one stands for many"
+            }
+        }
+        is AcpReactionOperator.Distinct -> Unit
+    }
+    return reasons
 }
 
 private fun awaitRefusal(index: Int, await: AcpAwaitDeclaration): String? =
