@@ -63,6 +63,25 @@ class AcpObservationReducerTest {
     }
 
     @Test
+    fun `a tool call announced already terminal publishes its completion exactly once`() {
+        // The same law as the repeated update, measured at the other door: an agent that
+        // announces a call with its terminal status still owes the completion fact — and owes
+        // it once, however often it re-announces the end.
+        val reducer = reducer()
+        val announced = reducer.apply(
+            AcpObservation.ToolCall("ex-1", AcpEvidence.AGENT_CLAIM, "tc-1", "t", "COMPLETED", "READ"),
+        )
+        val repeated = reducer.apply(
+            AcpObservation.ToolCall("ex-1", AcpEvidence.AGENT_CLAIM, "tc-1", "t", "COMPLETED", "READ"),
+        )
+
+        assertEquals(1, announced.count { it is AcpObservation.ToolCallCompleted })
+        assertEquals(0, repeated.count { it is AcpObservation.ToolCallCompleted })
+        assertEquals(1, reducer.state.completions, "the state must count the completion it published")
+        assertTrue(reducer.state.toolCalls.single().completed)
+    }
+
+    @Test
     fun `replaying the transcript reproduces the same snapshot`() {
         val transcript = listOf(
             AcpObservation.ExchangeStarted("ex-1", AcpEvidence.VERIFIED),
